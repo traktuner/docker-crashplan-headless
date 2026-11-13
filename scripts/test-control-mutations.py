@@ -21,6 +21,12 @@ import tempfile
 
 # name, relative source file, package, original text, weakened text
 MUTATIONS = [
+    ("scan-stalled-barrier", "internal/engine/scan.go", "./internal/engine", ' || state == "stalled"', ''),
+    ("scan-session-revision", "internal/engine/scan.go", "./internal/engine", 'c.BindSession(ctx, saved.Revision)', 'c.BindSession(ctx, c.SessionRevision())'),
+    ("scan-native-identity", "internal/engine/scan.go", "./internal/engine", 'identity = &accountIdentity{user: saved.User, self: saved.Self}', 'identity = nil'),
+    ("scan-journal-attribution", "internal/engine/scan.go", "./internal/engine", 'Binding: op.binding', 'Binding: nil'),
+    ("scan-legacy-context", "internal/engine/scan.go", "./internal/engine", 'if saved == nil {\n\t\treturn nil, ErrSessionChanged\n\t}', 'if saved == nil {\n\t\treturn c.operationContext(ctx), nil\n\t}'),
+    ("scan-invalid-context", "internal/engine/scan.go", "./internal/engine", 'op.binding != nil && (op.binding.Revision == 0 || !validID(op.binding.User) || !validID(op.binding.Self))', 'false'),
     ("config-image-layout", "internal/config/config.go", "./internal/config", 'dir != "" && dir != "/config"', '(dir != "" && dir != "/config") && false'),
     ("state-parent-symlink", "internal/statefile/store.go", "./internal/statefile", "syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC", "syscall.O_DIRECTORY|syscall.O_CLOEXEC"),
     ("state-record-symlink", "internal/statefile/store.go", "./internal/statefile", "syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK", "syscall.O_RDONLY|syscall.O_NONBLOCK"),

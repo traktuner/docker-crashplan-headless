@@ -23,7 +23,7 @@ func TestScanTracksNativeCompletionAndNeverReplays(t *testing.T) {
 	completed := time.Now().Add(-time.Hour).UnixMilli()
 	scanning := false
 	calls := 0
-	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+	c := scanFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/BackupSet/7" {
 			io.WriteString(w, `{"id":"7"}`)
 			return
@@ -83,7 +83,7 @@ func TestScanJournalPreservesAmbiguityAcrossRestart(t *testing.T) {
 	}
 	defer store.Close()
 	calls := 0
-	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+	c := scanFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/BackupSet/7" {
 			io.WriteString(w, `{"id":"7"}`)
 			return
@@ -122,7 +122,7 @@ func TestScanRequiresBaselineBeforeDispatch(t *testing.T) {
 	defer store.Close()
 	for _, body := range []string{`{}`, `{"scanning":false}`, `{"backupSetId":8,"scanning":false,"lastCompletedScanDate":0}`, `{"backupSetId":7,"scanning":true,"lastCompletedScanDate":0}`} {
 		calls := 0
-		c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		c := scanFixture(t, func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/v1/BackupSet/7" {
 				io.WriteString(w, `{"id":"7"}`)
 				return
@@ -147,7 +147,7 @@ func TestScanRequiresBaselineBeforeDispatch(t *testing.T) {
 func TestScanCannotClaimAnotherGenerationCompletionAndCanBeAcknowledged(t *testing.T) {
 	store, _ := statefile.Open(filepath.Join(t.TempDir(), "state"))
 	defer store.Close()
-	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+	c := scanFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/BackupSet/7" {
 			io.WriteString(w, `{"id":"7"}`)
 			return
@@ -191,7 +191,7 @@ func TestScanCannotClaimAnotherGenerationCompletionAndCanBeAcknowledged(t *testi
 func TestScanPersistsUncertaintyBeforeNativeDispatch(t *testing.T) {
 	store, _ := statefile.Open(filepath.Join(t.TempDir(), "state"))
 	defer store.Close()
-	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+	c := scanFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/BackupSet/7" {
 			io.WriteString(w, `{"id":"7"}`)
 			return
@@ -229,7 +229,7 @@ func TestNativeScanWireStringsAndCompletionReset(t *testing.T) {
 			completed := time.Now().Add(-time.Hour).UnixMilli()
 			duration := int64(1000)
 			scanning := false
-			c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+			c := scanFixture(t, func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/v1/BackupSet/7":
 					io.WriteString(w, `{"id":"7"}`)
@@ -273,14 +273,14 @@ func TestNativeScanWireStringsAndCompletionReset(t *testing.T) {
 
 func TestNativeScanStatsRequireVariantAndRejectMalformedLongs(t *testing.T) {
 	for _, value := range []string{`null`, `"1e3"`, `1.5`, `true`, `"9223372036854775808"`} {
-		c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		c := scanFixture(t, func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, `{"backupSetId":"7","scanning":false,"lastCompletedScanDate":"0","trueLastCompletedScanDate":%s,"scanDurationInMs":"-1"}`, value)
 		})
 		if _, err := c.ScanStats(context.Background(), "7"); !errors.Is(err, ErrProtocol) {
 			t.Fatalf("bad native timestamp accepted: %s", value)
 		}
 	}
-	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+	c := scanFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/BackupSet/7" {
 			io.WriteString(w, `{"id":"7"}`)
 			return
@@ -297,7 +297,7 @@ func TestScanUnknownSetNeverDispatches(t *testing.T) {
 	store, _ := statefile.Open(filepath.Join(t.TempDir(), "state"))
 	defer store.Close()
 	commands := 0
-	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+	c := scanFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/BackupSet/7" {
 			w.WriteHeader(400)
 			io.WriteString(w, `{"errors":[]}`)
@@ -319,7 +319,7 @@ func TestScanCompletionMustBelongToThisRequestAndV3HasNoDurationStall(t *testing
 	old := time.Now().Add(-2 * time.Hour).UnixMilli()
 	completed := old
 	scanning := false
-	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+	c := scanFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/BackupSet/7":
 			io.WriteString(w, `{"id":"7"}`)
@@ -362,7 +362,7 @@ func TestUnchangedRecentCompletionIsNotThisScan(t *testing.T) {
 	store, _ := statefile.Open(filepath.Join(t.TempDir(), "state"))
 	defer store.Close()
 	now := time.Now().UnixMilli()
-	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+	c := scanFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/BackupSet/7":
 			io.WriteString(w, `{"id":"7"}`)

@@ -174,6 +174,8 @@ export function SettingControl({
   disabled: boolean
   change: (v: unknown) => void
 }) {
+  if (field.kind === 'retention-interval' && String(value) === '-1')
+    return <output aria-label={field.label}>Never</output>
   if (
     field.kind === 'compression' ||
     field.kind === 'dedup' ||

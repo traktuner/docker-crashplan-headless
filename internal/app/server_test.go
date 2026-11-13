@@ -34,21 +34,29 @@ func (g *fixtureGate) Check() error {
 	return nil
 }
 
-func newFixture(t *testing.T) (*Server, *atomic.Int32, *bytes.Buffer) {
+type fixtureCalls struct {
+	atomic.Int32
+	scans atomic.Int32
+}
+
+func newFixture(t *testing.T) (*Server, *fixtureCalls, *bytes.Buffer) {
 	t.Helper()
-	calls := &atomic.Int32{}
+	calls := &fixtureCalls{}
 	native := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		switch r.URL.Path {
 		case "/v0/LoginRequest":
 			io.WriteString(w, `{"errors":[],"httpToken":"native-private-canary"}`)
 		case "/v0/Command":
+			calls.scans.Add(1)
 			if r.Header.Get("Authorization") != "token native-private-canary" {
 				t.Error("native authorization missing")
 			}
 			io.WriteString(w, `{"errors":[],"results":[{"command":{"name":"backup.scan"}}]}`)
 		case "/v1/BackupSet/9007199254740993":
 			io.WriteString(w, `{"id":"9007199254740993"}`)
+		case "/v0/GetComputers":
+			io.WriteString(w, `{"UsersMessage":{"myUserId":"11"},"ComputersMessage":{"computers":[{"peerId":"21","userId":"11","properties":{"ME":"true"}}]}}`)
 		case "/v0/GetScanStats":
 			io.WriteString(w, `{"backupSetId":9007199254740993,"scanning":false,"lastCompletedScanDate":"100","unamendedLastCompletedScanDate":"100","scanDurationInMs":"0"}`)
 		case "/v1/ApplicationStatus":
@@ -147,8 +155,8 @@ func TestWebLoginNativeLoginAndScanDoNotExposeSecrets(t *testing.T) {
 		t.Fatal("native token sent to browser")
 	}
 	w = request(h, "POST", "/api/v1/backup-sets/9007199254740993/scan", `{}`, cookie, csrf, "https://backup.fixture.invalid")
-	if w.Code != 202 || calls.Load() != 4 {
-		t.Fatal("native scan was not accepted exactly once", w.Code, calls.Load())
+	if w.Code != 202 || calls.scans.Load() != 1 {
+		t.Fatal("native scan was not accepted exactly once", w.Code, calls.scans.Load())
 	}
 	if strings.Contains(logs.String(), "canary") || strings.Contains(logs.String(), "fixture-web-password") {
 		t.Fatal("private data in application logs")

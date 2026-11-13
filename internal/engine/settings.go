@@ -167,13 +167,16 @@ func normalizeSetting(spec SettingSpec, raw json.RawMessage) (json.RawMessage, e
 			return nil, ErrInvalidRequest
 		}
 		value = b
-	case "cpu", "byte", "percent", "integer", "long":
+	case "cpu", "byte", "percent", "integer", "long", "retention-interval":
 		var number json.Number
 		if json.Unmarshal(raw, &number) != nil {
 			return nil, ErrInvalidRequest
 		}
 		n, err := number.Int64()
 		min, max := int64(0), int64(2147483647)
+		if spec.Kind == "retention-interval" {
+			min = -1
+		}
 		if spec.Kind == "long" {
 			max = math.MaxInt64
 		}

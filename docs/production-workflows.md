@@ -25,6 +25,7 @@ Settings include native scan scheduling, CPU/network preferences and user/interf
 Native policy locks remain visible and prevent edits.
 Readback reports settings that the engine did not apply.
 Retention values that the native handler does not update remain read-only.
+Supported native retention intervals display `-1` as Never without changing the policy.
 
 The default image discovers filesystem changes through scans.
 Manual full scans require native command authorization.
@@ -32,6 +33,10 @@ Scan records distinguish accepted, running, completed, stalled and indeterminate
 Only native completion evidence marks a scan complete.
 A disconnected caller does not stop already accepted work.
 Uncertain commands are not automatically repeated.
+An accepted scan that remains unobserved becomes stalled after 30 minutes.
+It still blocks another submission until native terminal evidence or explicit acknowledgement.
+Scan records retain private account, device and session attribution.
+A same-JVM session change leaves unresolved work indeterminate; newer session counters cannot complete it.
 
 Activity controls show transfer counters, alerts, history and pause/resume.
 Pause/resume retains its selected scope.

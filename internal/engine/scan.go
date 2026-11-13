@@ -27,6 +27,46 @@ type ScanOperation struct {
 	Completion         int64     `json:"completion,omitempty"`
 	Created            time.Time `json:"created"`
 	Updated            time.Time `json:"updated"`
+	binding            *scanBinding
+}
+
+// The journal keeps attribution private; public scan DTOs omit this binding.
+type scanBinding struct {
+	Revision uint64 `json:"revision"`
+	User     string `json:"user"`
+	Self     string `json:"self"`
+}
+
+type scanRecord struct {
+	ScanOperation
+	Binding *scanBinding `json:"context,omitempty"`
+}
+
+func (c *Client) pinScan(ctx context.Context) (*scanBinding, error) {
+	if err := c.pinIdentity(ctx); err != nil {
+		return nil, err
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	binding, _ := ctx.Value(sessionKey{}).(*sessionBinding)
+	if binding == nil || binding.identity == nil || !c.sessionCurrentLocked(ctx) {
+		return nil, ErrSessionChanged
+	}
+	return &scanBinding{Revision: binding.revision, User: binding.identity.user, Self: binding.identity.self}, nil
+}
+
+func (c *Client) scanContext(ctx context.Context, saved *scanBinding) (context.Context, error) {
+	if saved == nil {
+		return nil, ErrSessionChanged
+	}
+	bound, err := c.BindSession(ctx, saved.Revision)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	bound.Value(sessionKey{}).(*sessionBinding).identity = &accountIdentity{user: saved.User, self: saved.Self}
+	c.mu.Unlock()
+	return bound, nil
 }
 
 type ScanStats struct {
@@ -138,11 +178,17 @@ func NewScans(client *Client, store *statefile.Store) (*Scans, error) {
 	if err != nil {
 		return nil, err
 	}
-	if json.Unmarshal(raw, &s.operations) != nil || s.operations == nil || len(s.operations) > 256 {
+	var records []scanRecord
+	if json.Unmarshal(raw, &records) != nil || records == nil || len(records) > 256 {
 		return nil, ErrProtocol
 	}
 	seen := make(map[string]bool)
-	for _, op := range s.operations {
+	for _, record := range records {
+		op := record.ScanOperation
+		op.binding = record.Binding
+		if op.binding != nil && (op.binding.Revision == 0 || !validID(op.binding.User) || !validID(op.binding.Self)) {
+			return nil, ErrProtocol
+		}
 		if len(op.ID) != 32 || seen[op.ID] || !validID(op.BackupSetID) || op.Baseline < 0 || op.Created.IsZero() || op.Updated.IsZero() {
 			return nil, ErrProtocol
 		}
@@ -155,19 +201,24 @@ func NewScans(client *Client, store *statefile.Store) (*Scans, error) {
 			return nil, ErrProtocol
 		}
 		seen[op.ID] = true
+		s.operations = append(s.operations, op)
 	}
 	return s, nil
 }
 
 func (s *Scans) save() error {
-	raw, err := json.Marshal(s.operations)
+	records := make([]scanRecord, len(s.operations))
+	for i, op := range s.operations {
+		records[i] = scanRecord{ScanOperation: op, Binding: op.binding}
+	}
+	raw, err := json.Marshal(records)
 	if err != nil {
 		return ErrProtocol
 	}
 	return s.store.Write("operations.json", raw)
 }
 func pending(state string) bool {
-	return state == "accepted" || state == "running" || state == "indeterminate"
+	return state == "accepted" || state == "running" || state == "indeterminate" || state == "stalled"
 }
 
 // Start durably records uncertainty BEFORE dispatch. A crash at any following
@@ -187,6 +238,11 @@ func (s *Scans) Start(ctx context.Context, setID string) (ScanOperation, error) 
 		}
 	}
 	s.mu.Unlock()
+	ctx = s.client.operationContext(ctx)
+	binding, err := s.client.pinScan(ctx)
+	if err != nil {
+		return ScanOperation{}, err
+	}
 	if err := s.client.KnownScanSet(ctx, setID); err != nil {
 		return ScanOperation{}, err
 	}
@@ -218,7 +274,7 @@ func (s *Scans) Start(ctx context.Context, setID string) (ScanOperation, error) 
 		return ScanOperation{}, ErrUnavailable
 	}
 	now := time.Now().UTC()
-	op := ScanOperation{Generation: s.generation, ID: hex.EncodeToString(id[:]), BackupSetID: setID, State: "indeterminate", Baseline: baseline.LastCompleted, EngineVariant: baseline.EngineVariant, Created: now, Updated: now}
+	op := ScanOperation{Generation: s.generation, ID: hex.EncodeToString(id[:]), BackupSetID: setID, State: "indeterminate", Baseline: baseline.LastCompleted, EngineVariant: baseline.EngineVariant, Created: now, Updated: now, binding: binding}
 	s.operations = append(s.operations, op)
 	if err := s.save(); err != nil {
 		s.operations = s.operations[:len(s.operations)-1]
@@ -269,41 +325,20 @@ func (s *Scans) Observe(ctx context.Context) error {
 	s.mu.Unlock()
 	var failures []error
 	for _, op := range snapshot {
-		if !pending(op.State) && op.State != "stalled" {
+		if !pending(op.State) {
 			continue
 		}
-		stats, err := s.client.ScanStats(ctx, op.BackupSetID)
+		next, err := s.observeOperation(ctx, op, generation)
 		if err != nil {
 			failures = append(failures, err)
 			continue
 		}
-		next := op.State
-		if op.Generation != generation || op.EngineVariant != stats.EngineVariant {
-			next = "interrupted"
-			op.Reason = "ENGINE_GENERATION_CHANGED"
-		} else if !stats.Scanning && stats.LastCompleted > op.Baseline && stats.Duration >= 0 && (stats.EngineVariant != "v3" || stats.Duration > 0) && stats.LastCompleted-stats.Duration >= op.Created.UnixMilli()-2000 {
-			next = "completed"
-			op.Completion = stats.LastCompleted
-			op.CompletionEvidence = "native_recorded"
-		} else if stats.Scanning {
-			next = "running"
-		} else if op.State == "running" || (stats.LastCompleted > op.Baseline && stats.Duration < 1 && stats.EngineVariant == "v3") {
-			next = "failed"
-			op.Reason = "STOPPED_WITHOUT_COMPLETION"
-			if stats.EngineVariant == "v3" && stats.Duration < 1 {
-				op.Reason = "NATIVE_RESET_WITHOUT_SUCCESS"
-			}
-		} else if time.Since(op.Updated) > 30*time.Minute && op.State != "indeterminate" {
-			next = "stalled"
-			op.Reason = "SCAN_START_NOT_OBSERVED"
-		}
-		if next != op.State {
+		if next.State != op.State || next.Reason != op.Reason {
 			s.mu.Lock()
 			for i, current := range s.operations {
 				if current.ID == op.ID && current.State == op.State {
-					op.State = next
-					op.Updated = time.Now().UTC()
-					s.operations[i] = op
+					next.Updated = time.Now().UTC()
+					s.operations[i] = next
 					if err := s.save(); err != nil {
 						failures = append(failures, err)
 					}
@@ -315,6 +350,46 @@ func (s *Scans) Observe(ctx context.Context) error {
 	}
 	return errors.Join(failures...)
 }
+
+func (s *Scans) observeOperation(ctx context.Context, op ScanOperation, generation string) (ScanOperation, error) {
+	if op.Generation != generation {
+		op.State, op.Reason = "interrupted", "ENGINE_GENERATION_CHANGED"
+		return op, nil
+	}
+	bound, err := s.client.scanContext(ctx, op.binding)
+	var stats ScanStats
+	if err == nil {
+		stats, err = s.client.ScanStats(bound, op.BackupSetID)
+		if err == nil && !s.client.sessionCurrent(bound) {
+			err = ErrSessionChanged
+		}
+	}
+	if errors.Is(err, ErrSessionChanged) {
+		// A same-JVM login or identity change does not prove old work ended.
+		op.State, op.Reason = "indeterminate", "NATIVE_SESSION_CHANGED"
+		return op, nil
+	}
+	if err != nil {
+		return op, err
+	}
+	switch {
+	case op.EngineVariant != stats.EngineVariant:
+		op.State, op.Reason = "interrupted", "ENGINE_GENERATION_CHANGED"
+	case !stats.Scanning && stats.LastCompleted > op.Baseline && stats.Duration >= 0 && (stats.EngineVariant != "v3" || stats.Duration > 0) && stats.LastCompleted-stats.Duration >= op.Created.UnixMilli()-2000:
+		op.State, op.Reason = "completed", ""
+		op.Completion, op.CompletionEvidence = stats.LastCompleted, "native_recorded"
+	case stats.Scanning:
+		op.State, op.Reason = "running", ""
+	case op.State == "running" || (stats.LastCompleted > op.Baseline && stats.Duration < 1 && stats.EngineVariant == "v3"):
+		op.State, op.Reason = "failed", "STOPPED_WITHOUT_COMPLETION"
+		if stats.EngineVariant == "v3" && stats.Duration < 1 {
+			op.Reason = "NATIVE_RESET_WITHOUT_SUCCESS"
+		}
+	case time.Since(op.Updated) > 30*time.Minute && op.State != "indeterminate":
+		op.State, op.Reason = "stalled", "SCAN_START_NOT_OBSERVED"
+	}
+	return op, nil
+}
 func (s *Scans) BeginGeneration(id string) error {
 	s.actionMu.Lock()
 	defer s.actionMu.Unlock()
@@ -322,7 +397,7 @@ func (s *Scans) BeginGeneration(id string) error {
 	defer s.mu.Unlock()
 	s.generation = id
 	for i := range s.operations {
-		if s.operations[i].Generation != id && s.operations[i].State != "indeterminate" && (pending(s.operations[i].State) || s.operations[i].State == "stalled") {
+		if s.operations[i].Generation != id && s.operations[i].State != "indeterminate" && pending(s.operations[i].State) {
 			s.operations[i].State = "interrupted"
 			s.operations[i].Updated = time.Now().UTC()
 		}
@@ -335,7 +410,7 @@ func (s *Scans) Interrupt() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.operations {
-		if pending(s.operations[i].State) || s.operations[i].State == "stalled" {
+		if pending(s.operations[i].State) {
 			s.operations[i].State = "interrupted"
 			s.operations[i].Updated = time.Now().UTC()
 		}

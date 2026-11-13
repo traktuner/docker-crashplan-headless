@@ -130,6 +130,44 @@ func TestRetentionIsProjectedAsReadOnlyNativePolicy(t *testing.T) {
 	}
 }
 
+func TestNativeNeverRetentionPreservesBackupSetDetails(t *testing.T) {
+	for _, field := range []string{"versionLastNinetyDaysInterval", "versionLastYearInterval", "versionPrevYearsInterval"} {
+		t.Run(field, func(t *testing.T) {
+			body := strings.Replace(setFixture, `"destinations":`, `"retentionPolicy":{"`+field+`":{"value":-1,"locked":false}},"destinations":`, 1)
+			c := fixture(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "["+body+"]") })
+			c.SetToken("fixture")
+			sets, err := c.BackupSets(context.Background())
+			if err != nil || len(sets) != 1 {
+				t.Fatal("native Never policy blocks set list", err)
+			}
+			found := false
+			for _, setting := range sets[0].Retention {
+				if setting.Name == field {
+					found = true
+					if string(setting.Value) != "-1" || !setting.Available || !setting.Locked {
+						t.Fatal("native sentinel or read-only policy lost", setting)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("retention field omitted")
+			}
+		})
+	}
+}
+
+func TestRetentionSentinelDoesNotRelaxOtherIntegerDomains(t *testing.T) {
+	for _, kind := range []string{"integer", "long", "retention-interval"} {
+		raw := json.RawMessage(`-1`)
+		if kind == "retention-interval" {
+			raw = json.RawMessage(`-2`)
+		}
+		if _, err := normalizeSetting(SettingSpec{Kind: kind}, raw); !errors.Is(err, ErrInvalidRequest) {
+			t.Fatal("unsupported negative value accepted", kind, err)
+		}
+	}
+}
+
 func TestSelectionRejectsNonCanonicalNativePathInsteadOfRewritingIt(t *testing.T) {
 	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, strings.Replace(setFixture, `/storage/one`, `/storage/../etc`, 1))

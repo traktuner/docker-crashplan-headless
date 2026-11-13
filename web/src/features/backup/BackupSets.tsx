@@ -498,7 +498,9 @@ export function BackupSets() {
             .at(-1)
           const pending =
             current &&
-            ['accepted', 'running', 'indeterminate'].includes(current.state)
+            ['accepted', 'running', 'indeterminate', 'stalled'].includes(
+              current.state,
+            )
           return (
             <section className="card" key={set.id}>
               <div className="set-heading">

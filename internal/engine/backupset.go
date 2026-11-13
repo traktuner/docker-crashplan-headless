@@ -150,9 +150,9 @@ func decodeSet(raw []byte) (setRecord, error) {
 			{"keepDeleted", "Keep deleted files", "boolean", ""},
 			{"keepDeletedMinutes", "Deleted-file retention", "integer", "minutes"},
 			{"versionLastWeekInterval", "Version interval: last week", "integer", "minutes"},
-			{"versionLastNinetyDaysInterval", "Version interval: last 90 days", "integer", "minutes"},
-			{"versionLastYearInterval", "Version interval: last year", "integer", "minutes"},
-			{"versionPrevYearsInterval", "Version interval: previous years", "integer", "minutes"},
+			{"versionLastNinetyDaysInterval", "Version interval: last 90 days", "retention-interval", "minutes"},
+			{"versionLastYearInterval", "Version interval: last year", "retention-interval", "minutes"},
+			{"versionPrevYearsInterval", "Version interval: previous years", "retention-interval", "minutes"},
 		}})
 		if err != nil {
 			return r, err
