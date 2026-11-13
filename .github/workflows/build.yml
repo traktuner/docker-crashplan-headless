@@ -85,9 +85,8 @@ jobs:
             docker tag crashplan-headless:ci "$IMAGE:$tag"
             docker push "$IMAGE:$tag"
           done
-          reference="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$RELEASE_VERSION")"
-          digest="${reference#"$IMAGE@"}"
-          if [[ "$reference" != "$IMAGE@"* || ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+          digest="$(docker buildx imagetools inspect "$IMAGE:$RELEASE_VERSION" --format '{{.Manifest.Digest}}')"
+          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
             echo "Invalid published image digest" >&2
             exit 1
           fi
