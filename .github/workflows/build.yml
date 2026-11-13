@@ -1,0 +1,77 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/docker-crashplan-headless
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read pinned CrashPlan version
+        id: v
+        run: |
+          set -a; . ./versions.env; set +a
+          echo "version=$CRASHPLAN_VERSION" >>"$GITHUB_OUTPUT"
+          echo "build=$CRASHPLAN_BUILD" >>"$GITHUB_OUTPUT"
+          echo "sha256=$CRASHPLAN_SHA256" >>"$GITHUB_OUTPUT"
+          echo "short=${GITHUB_SHA::7}" >>"$GITHUB_OUTPUT"
+
+      - name: Build image
+        run: |
+          docker build \
+            --build-arg SOURCE_REVISION=${{ github.sha }} \
+            --build-arg CRASHPLAN_VERSION=${{ steps.v.outputs.version }} \
+            --build-arg CRASHPLAN_BUILD=${{ steps.v.outputs.build }} \
+            --build-arg CRASHPLAN_SHA256=${{ steps.v.outputs.sha256 }} \
+            -t crashplan-headless:ci .
+
+      - name: Smoke test
+        run: scripts/smoke-test.sh crashplan-headless:ci
+
+      - name: Native watcher and traversal checks
+        run: |
+          scripts/test-watchers.sh crashplan-headless:ci
+          bash scripts/test-restore-helper.sh crashplan-headless:ci
+
+      - name: Control and filesystem race checks
+        run: |
+          docker build --target control-test \
+            --build-arg CRASHPLAN_VERSION=${{ steps.v.outputs.version }} \
+            --build-arg CRASHPLAN_BUILD=${{ steps.v.outputs.build }} \
+            --build-arg CRASHPLAN_SHA256=${{ steps.v.outputs.sha256 }} \
+            -t crashplan-headless:control-test .
+
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          base="${{ steps.v.outputs.version }}-${{ steps.v.outputs.build }}"
+          for tag in "$base" "$base-${{ steps.v.outputs.short }}" latest; do
+            docker tag crashplan-headless:ci "$IMAGE:$tag"
+            docker push "$IMAGE:$tag"
+          done
+          echo "pushed $IMAGE:$base-${{ steps.v.outputs.short }}" >>"$GITHUB_STEP_SUMMARY"

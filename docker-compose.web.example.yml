@@ -1,0 +1,29 @@
+# Add this overlay to docker-compose.example.yml for the web interface.
+# Required:
+#   CPH_PUBLIC_ORIGINS='["http://127.0.0.1:8080"]'
+#   CPH_WEB_PASSWORD_PATH=/srv/crashplan/web-password
+# The password file must contain at least 12 characters.
+# For LAN access, set CPH_BIND_ADDRESS and use its exact browser origin.
+services:
+  crashplan:
+    environment:
+      CPH_MODE: web
+      CPH_LISTEN: ":8080"
+      CPH_PUBLIC_ORIGINS: ${CPH_PUBLIC_ORIGINS:?Set a JSON array of exact browser origins}
+      CPH_WEB_USERNAME: ${CPH_WEB_USERNAME:-admin}
+      CPH_WEB_PASSWORD_FILE: /run/secrets/cph-web-password
+      # Reverse proxy: trust only its actual CIDR, if needed for client IPs.
+      # CPH_TRUSTED_PROXIES: '["172.20.0.2/32"]'
+      # Direct TLS: also mount the certificate and key read-only below.
+      # CPH_TLS_CERT_FILE: /run/secrets/web-cert.pem
+      # CPH_TLS_KEY_FILE: /run/secrets/web-key.pem
+      # Use an https:// origin when direct TLS is enabled.
+    ports:
+      - "${CPH_BIND_ADDRESS:-127.0.0.1}:${CPH_WEB_PORT:-8080}:8080"
+    volumes:
+      - type: bind
+        source: ${CPH_WEB_PASSWORD_PATH:?Set the private web password file path}
+        target: /run/secrets/cph-web-password
+        read_only: true
+        bind:
+          create_host_path: false

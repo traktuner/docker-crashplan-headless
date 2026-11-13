@@ -1,0 +1,68 @@
+name: upstream
+
+# Checks daily for a new CrashPlan Linux agent. A new version becomes a pull
+# request that bumps versions.env; the build workflow then builds and
+# smoke-tests it (including the patch self-test) before you merge.
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compare with the console download
+        id: cmp
+        run: |
+          set -a; . ./versions.env; set +a
+          current="$CRASHPLAN_VERSION-$CRASHPLAN_BUILD"
+          eval "$(scripts/resolve-latest.sh)"
+          latest="$CRASHPLAN_VERSION-$CRASHPLAN_BUILD"
+          echo "current=$current latest=$latest"
+          echo "latest=$latest" >>"$GITHUB_OUTPUT"
+          if [ "$current" = "$latest" ]; then
+            echo "new=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "new=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Open pull request
+        if: steps.cmp.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="crashplan/${{ steps.cmp.outputs.latest }}"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "branch $branch already exists"
+            exit 0
+          fi
+          eval "$(scripts/resolve-latest.sh --sha256)"
+          cat >versions.env <<EOF
+          # CrashPlan Linux agent pinned for the image build.
+          # Updated automatically by .github/workflows/upstream.yml (via pull request).
+          CRASHPLAN_VERSION=$CRASHPLAN_VERSION
+          CRASHPLAN_BUILD=$CRASHPLAN_BUILD
+          CRASHPLAN_SHA256=$CRASHPLAN_SHA256
+          EOF
+          sed -i 's/^ *//' versions.env
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "CrashPlan $CRASHPLAN_VERSION build $CRASHPLAN_BUILD"
+          git push origin "$branch"
+          gh pr create --head "$branch" \
+            --title "CrashPlan $CRASHPLAN_VERSION (build $CRASHPLAN_BUILD)" \
+            --body "New CrashPlan Linux agent from the console download. The build workflow checks that all patches still match and that the service starts. Merge to publish the image."
+          # Pull requests opened with GITHUB_TOKEN do not start workflows;
+          # workflow_dispatch does.
+          gh workflow run build.yml --ref "$branch"

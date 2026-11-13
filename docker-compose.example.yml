@@ -1,0 +1,93 @@
+# One image; local source mounts; headless by default.
+# Required substitutions:
+#   CPH_CONFIG_PATH=/srv/crashplan/config
+#   CPH_DATA_PATH=/srv/data
+#   CPH_RESTORE_PATH=/srv/restores
+#   CPH_MEMORY_LIMIT=8g   # Must exceed the saved Java heap plus native headroom.
+# Create these directories and .cph-source-ready inside each source first.
+# New installation: optionally set CPH_HEAP=4G. Existing config: leave it empty.
+#
+# Headless: docker compose -f docker-compose.example.yml up -d
+# Web: add -f docker-compose.web.example.yml and its required variables.
+# Full option descriptions: docs/environment.md
+services:
+  crashplan:
+    image: ${CPH_IMAGE:-ghcr.io/traktuner/docker-crashplan-headless:12.1.1-2}
+    hostname: crashplan
+    read_only: true
+    environment:
+      CPH_MODE: ${CPH_MODE:-headless}
+      CPH_SOURCE_ROOTS: '${CPH_SOURCE_ROOTS:-["/storage/data"]}'
+      CPH_SOURCE_POLICY: ${CPH_SOURCE_POLICY:-local}
+      CPH_SOURCE_SENTINEL: ${CPH_SOURCE_SENTINEL:-.cph-source-ready}
+      CPH_RESTORE_ROOTS: '${CPH_RESTORE_ROOTS:-["/restore"]}'
+      TZ: ${TZ:-UTC}
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      # Empty preserves /config/conf/jvm_args; it does not reset the heap.
+      CRASHPLAN_SRV_MAX_MEM: ${CPH_HEAP:-}
+      CPH_LOG_LEVEL: ${CPH_LOG_LEVEL:-INFO}
+      CPH_LOG_FORMAT: ${CPH_LOG_FORMAT:-json}
+      CPH_STOP_GRACE_SECONDS: ${CPH_STOP_GRACE_SECONDS:-120}
+      CPH_PATCHES: no-file-watcher,no-watcher-walk
+      # Advanced JVM tuning. Defaults suit scan-based operation.
+      CPH_GC: ${CPH_GC:-g1}
+      CPH_G1_PERIODIC_GC_MS: ${CPH_G1_PERIODIC_GC_MS:-300000}
+      CPH_UNCOMMIT_DELAY_MS: ${CPH_UNCOMMIT_DELAY_MS:-300000}
+      CPH_MAX_HEAP_FREE_RATIO: ${CPH_MAX_HEAP_FREE_RATIO:-30}
+      CPH_MIN_HEAP_FREE_RATIO: ${CPH_MIN_HEAP_FREE_RATIO:-15}
+      CPH_TRIM_NATIVE_MS: ${CPH_TRIM_NATIVE_MS:-60000}
+      CPH_MALLOC_ARENA_MAX: ${CPH_MALLOC_ARENA_MAX:-2}
+      # Optional private JVM diagnostics. Off during normal operation.
+      # CPH_DIAGNOSTICS: "1"
+      # CPH_JFR: "1"
+      # CPH_HEAPDUMP_ON_OOM: "1"
+      # CPH_DIAG_DIR: /config/diag
+      # CPH_EXTRA_JAVA_OPTS: "-XX:MaxDirectMemorySize=1g"
+    volumes:
+      - type: bind
+        source: ${CPH_CONFIG_PATH:?Set the existing persistent config directory}
+        target: /config
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CPH_DATA_PATH:?Set the existing local source directory}
+        target: /storage/data
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CPH_RESTORE_PATH:?Set the existing dedicated writable restore directory}
+        target: /restore
+        bind:
+          create_host_path: false
+      # Multiple sources: add one bind per source, then update CPH_SOURCE_ROOTS.
+      # - type: bind
+      #   source: /srv/photos
+      #   target: /storage/photos
+      #   read_only: true
+      #   bind:
+      #     create_host_path: false
+      # With photos above, use ["/storage/data","/storage/photos"].
+      # Create .cph-source-ready in both host directories.
+      #
+      # No restore writes: remove the /restore bind and set CPH_RESTORE_ROOTS=[].
+      # Original-location restore: deliberately make its source writable and
+      # declare the applicable source path in CPH_RESTORE_ROOTS.
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m
+      - /run:rw,nosuid,nodev,noexec,size=16m
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${CPH_MEMORY_LIMIT:?Set a limit above the saved JVM heap}
+    # Equal memory and memory-plus-swap limits disable container swap.
+    memswap_limit: ${CPH_MEMORY_LIMIT:?Set a limit above the saved JVM heap}
+    # Optional whole-container CPU limit; not a scan-duration guarantee.
+    # cpus: "2.0"
+    stop_grace_period: 300s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

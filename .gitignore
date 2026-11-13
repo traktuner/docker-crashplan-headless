@@ -1,0 +1,16 @@
+agent/out/
+__pycache__/
+
+# Native build output and runtime configuration.
+/agent/test-out/
+*.class
+*.jar
+*.tar
+*.tar.gz
+/config/
+
+# Production control service and static web build artifacts.
+/web/node_modules/
+/web/dist/
+/bin/
+/internal/ui/dist/

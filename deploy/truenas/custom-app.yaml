@@ -1,0 +1,61 @@
+# Native TrueNAS Custom App candidate, installed through Apps > Install via YAML.
+# Replace paths, origin and memory limits before installation.
+# Create .cph-source-ready inside the source dataset.
+# For an existing config, remove CRASHPLAN_SRV_MAX_MEM to preserve its heap.
+# Set mem_limit above that saved heap, with additional native headroom.
+# This file has no external host service, NFS, Docker socket or host PID binding.
+services:
+  crashplan:
+    image: ghcr.io/traktuner/docker-crashplan-headless:12.1.1-2
+    hostname: crashplan
+    read_only: true
+    environment:
+      CPH_MODE: web
+      CPH_SOURCE_ROOTS: '["/storage/data"]'
+      CPH_SOURCE_SENTINEL: .cph-source-ready
+      CPH_RESTORE_ROOTS: '["/restore"]'
+      CPH_PUBLIC_ORIGINS: '["http://192.0.2.10:31080"]'
+      CPH_WEB_USERNAME: admin
+      CPH_WEB_PASSWORD_FILE: /run/secrets/cph-web-password
+      CPH_LOG_LEVEL: INFO
+      CPH_LOG_FORMAT: json
+      CPH_STOP_GRACE_SECONDS: "120"
+      CRASHPLAN_SRV_MAX_MEM: 4G
+      TZ: UTC
+      LANG: C.UTF-8
+    ports:
+      - target: 8080
+        published: "31080"
+        protocol: tcp
+    volumes:
+      - type: bind
+        source: /mnt/tank/appdata/crashplan/config
+        target: /config
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/tank/data
+        target: /storage/data
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/tank/restores/crashplan
+        target: /restore
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/tank/appdata/crashplan/web-password
+        target: /run/secrets/cph-web-password
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m
+      - /run:rw,nosuid,nodev,noexec,size=16m
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 8g
+    memswap_limit: 8g
+    stop_grace_period: 300s
+    restart: unless-stopped

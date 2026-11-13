@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# Start the CrashPlan service JVM directly, replacing bin/CrashPlanService.
+#
+# The stock launcher only lets -Xmx through (conf/jvm_args) and blanks
+# JAVA_TOOL_OPTIONS. This script passes the same base arguments (captured
+# from app.log of 12.1.1, "JavaOptions") and adds memory-release, diagnostic
+# and agent options on top.
+set -euo pipefail
+
+CP_DIR=/usr/local/crashplan
+JAVA="$CP_DIR/jre/bin/java"
+NLIB="$CP_DIR/nlib"
+DIAG_DIR="${CPH_DIAG_DIR:-/config/diag}"
+
+log() { echo "[cph-launch] $*" >&2; }
+is_true() { case "${1,,}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
+
+# --- heap size -------------------------------------------------------------
+# CRASHPLAN_SRV_MAX_MEM keeps the jlesage/crashplan-pro semantics (e.g. 40G).
+heap_mb() {
+    local v="$1" num unit
+    if [[ ! "$v" =~ ^([0-9]+)([gGmMkK])$ ]]; then
+        log "ERROR: invalid CRASHPLAN_SRV_MAX_MEM '$v' (expected e.g. 4096M or 40G)"
+        exit 1
+    fi
+    num="${BASH_REMATCH[1]}"; unit="${BASH_REMATCH[2],,}"
+    case "$unit" in
+        g) echo $((num * 1024)) ;;
+        m) echo "$num" ;;
+        k) echo $((num / 1024)) ;;
+    esac
+}
+
+if [[ -n "${CRASHPLAN_SRV_MAX_MEM:-}" ]]; then
+    XMX_MB="$(heap_mb "$CRASHPLAN_SRV_MAX_MEM")"
+elif [[ -f "$CP_DIR/conf/jvm_args" ]] && grep -qE '^-Xmx[0-9]+[gGmMkK]$' "$CP_DIR/conf/jvm_args"; then
+    XMX_MB="$(heap_mb "$(grep -oE '[0-9]+[gGmMkK]$' "$CP_DIR/conf/jvm_args" | head -1)")"
+else
+    XMX_MB=1024
+fi
+if (( XMX_MB < 1024 )); then
+    log "ERROR: heap must be at least 1024M (got ${XMX_MB}M)"
+    exit 1
+fi
+
+# --- base arguments (identical to the stock launcher) -----------------------
+# Keep the stock launcher's user.install property. On Linux, the matching
+# SystemProperties.isRootInstall implementation instead checks whether the
+# working directory is outside user.home. Running in CP_DIR therefore keeps
+# the root-install restore-helper contract; this property does not waive it.
+USER_INSTALL="${CPH_USER_INSTALL:-1}"
+
+args=(
+    -Dsun.jnu.encoding=UTF-8
+    -Dfile.encoding=UTF-8
+    -Dsun.net.inetaddr.ttl=300
+    -Dnetworkaddress.cache.ttl=300
+    -Dsun.net.inetaddr.negative.ttl=0
+    -Dnetworkaddress.cache.negative.ttl=0
+    -Dapp=CrashPlanService
+    -DappBaseName=CrashPlan
+    -Djna.nosys=true
+    -Djava.awt.headless=true
+    -DCrashPlan=CrashPlan
+    -Dnashorn.args=--no-deprecation-warning
+    -XX:+UseCompactObjectHeaders
+    -XX:-ShrinkHeapInSteps
+    -XX:MaxHeapFreeRatio="${CPH_MAX_HEAP_FREE_RATIO:-30}"
+    -XX:MinHeapFreeRatio="${CPH_MIN_HEAP_FREE_RATIO:-15}"
+    --add-exports=java.base/sun.security.jca=ALL-UNNAMED
+    --add-exports=java.base/sun.security.x509=ALL-UNNAMED
+    --add-exports=java.base/sun.security.util=ALL-UNNAMED
+    --add-exports=java.base/sun.security.provider=ALL-UNNAMED
+    --add-opens=java.base/java.security=ALL-UNNAMED
+    --add-opens=java.base/java.io=ALL-UNNAMED
+    --add-opens=java.base/java.util=ALL-UNNAMED
+    --add-opens=java.base/java.lang=ALL-UNNAMED
+    -Djava.library.path="$NLIB"
+    -Djna.library.path="$NLIB"
+    --enable-native-access=ALL-UNNAMED
+    -Dc42.log.config="$CP_DIR/conf/service.log.xml"
+    -Duser.install="$USER_INSTALL"
+    -Xmx"${XMX_MB}m"
+    -Djava.class.path=lib/cpg-agent-service.jar:lang
+)
+
+# --- garbage collector: give memory back to the host -------------------------
+case "${CPH_GC:-g1}" in
+    g1)
+        # A periodic concurrent cycle when idle lets G1 shrink and uncommit
+        # the heap after the big verification scan instead of holding it.
+        args+=(-XX:+UseG1GC -XX:G1PeriodicGCInterval="${CPH_G1_PERIODIC_GC_MS:-300000}")
+        ;;
+    shenandoah)
+        args+=(-XX:+UseShenandoahGC -XX:ShenandoahUncommitDelay="${CPH_UNCOMMIT_DELAY_MS:-300000}")
+        ;;
+    zgc)
+        args+=(-XX:+UseZGC -XX:ZUncommitDelay="$(( ${CPH_UNCOMMIT_DELAY_MS:-300000} / 1000 ))")
+        ;;
+    *)
+        log "ERROR: CPH_GC must be g1, shenandoah or zgc (got '${CPH_GC}')"
+        exit 1
+        ;;
+esac
+
+# Return freed malloc memory (LevelDB, SQLite, NSS, JNA) to the OS.
+if [[ "${CPH_TRIM_NATIVE_MS:-60000}" != 0 ]]; then
+    args+=(-XX:TrimNativeHeapInterval="${CPH_TRIM_NATIVE_MS:-60000}")
+fi
+export MALLOC_ARENA_MAX="${CPH_MALLOC_ARENA_MAX:-2}"
+
+# --- diagnostics -------------------------------------------------------------
+mkdir -p "$DIAG_DIR"
+if is_true "${CPH_DIAGNOSTICS:-0}"; then
+    # NMT summary costs a few percent; attach allows jcmd from a sidecar.
+    args+=(-XX:NativeMemoryTracking=summary)
+else
+    args+=(-XX:+DisableAttachMechanism)
+fi
+if is_true "${CPH_JFR:-0}"; then
+    # shellcheck disable=SC2054 # commas belong to the JFR option value
+    args+=(-XX:StartFlightRecording=disk=true,maxsize=512m,maxage=24h,dumponexit=true,filename="$DIAG_DIR/")
+fi
+if is_true "${CPH_HEAPDUMP_ON_OOM:-0}"; then
+    # A dump is as large as the used heap. Check free space on /config first.
+    args+=(-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath="$DIAG_DIR")
+fi
+
+# --- agent -------------------------------------------------------------------
+# The agent also enforces every restore helper IPC request.
+args+=(-javaagent:"$CP_DIR/cph/cph-agent.jar")
+
+# --- extra options, last so they can override everything above ---------------
+if [[ -n "${CPH_EXTRA_JAVA_OPTS:-}" ]]; then
+    read -r -a extra <<<"$CPH_EXTRA_JAVA_OPTS"
+    args+=("${extra[@]}")
+fi
+
+unset JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS
+export LD_LIBRARY_PATH="$NLIB"
+export LD_PRELOAD="$NLIB/libwrapper.so"
+
+cd "$CP_DIR"
+log "heap=${XMX_MB}m gc=${CPH_GC:-g1} diagnostics=${CPH_DIAGNOSTICS:-0} patches=${CPH_PATCHES:-none}"
+exec "$JAVA" "${args[@]}" com.backup42.service.CPService

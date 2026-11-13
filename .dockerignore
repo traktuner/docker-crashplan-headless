@@ -1,0 +1,33 @@
+# Send only maintained build inputs. Private evidence and experiments never
+# enter the build context, even when they are merely ignored by Git.
+**
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!web/
+!web/**
+!agent/
+!agent/**
+!src/
+!src/libwrapper/
+!src/libwrapper/**
+!rootfs/
+!rootfs/**
+!LICENSES/
+!LICENSES/**
+!versions.env
+!Dockerfile
+!LICENSE
+web/node_modules/
+web/dist/
+internal/ui/dist/
+agent/out/
+agent/test-out/
+**/*.class
+**/*.jar
+**/*.tar
+**/*.tar.gz
+**/.env*
