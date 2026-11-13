@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Existing Java 25 build image; vendor jars remain outside the checkout.
+# Use the pinned build image; vendor jars remain outside the checkout.
 # Usage: scripts/test-agent.sh /absolute/path/to/vendor/lib
 set -euo pipefail
 cd "$(dirname "$0")/.."

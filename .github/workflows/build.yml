@@ -12,7 +12,6 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/docker-crashplan-headless
@@ -21,6 +20,12 @@ jobs:
   build:
     runs-on: ubuntu-26.04
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.v.outputs.release }}
+      digest: ${{ steps.image.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -32,6 +37,7 @@ jobs:
           echo "build=$CRASHPLAN_BUILD" >>"$GITHUB_OUTPUT"
           echo "sha256=$CRASHPLAN_SHA256" >>"$GITHUB_OUTPUT"
           echo "short=${GITHUB_SHA::7}" >>"$GITHUB_OUTPUT"
+          echo "release=$CRASHPLAN_VERSION-$CRASHPLAN_BUILD-r$GITHUB_RUN_NUMBER.$GITHUB_RUN_ATTEMPT" >>"$GITHUB_OUTPUT"
 
       - name: Build image
         run: |
@@ -40,6 +46,8 @@ jobs:
             --build-arg CRASHPLAN_VERSION=${{ steps.v.outputs.version }} \
             --build-arg CRASHPLAN_BUILD=${{ steps.v.outputs.build }} \
             --build-arg CRASHPLAN_SHA256=${{ steps.v.outputs.sha256 }} \
+            --label org.opencontainers.image.version=${{ steps.v.outputs.release }} \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
             -t crashplan-headless:ci .
 
       - name: Smoke test
@@ -67,11 +75,54 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push image
+        id: image
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          RELEASE_VERSION: ${{ steps.v.outputs.release }}
         run: |
           base="${{ steps.v.outputs.version }}-${{ steps.v.outputs.build }}"
-          for tag in "$base" "$base-${{ steps.v.outputs.short }}" latest; do
+          for tag in "$RELEASE_VERSION" "$base" "$base-${{ steps.v.outputs.short }}" latest; do
             docker tag crashplan-headless:ci "$IMAGE:$tag"
             docker push "$IMAGE:$tag"
           done
-          echo "pushed $IMAGE:$base-${{ steps.v.outputs.short }}" >>"$GITHUB_STEP_SUMMARY"
+          reference="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$RELEASE_VERSION")"
+          digest="${reference#"$IMAGE@"}"
+          if [[ "$reference" != "$IMAGE@"* || ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Invalid published image digest" >&2
+            exit 1
+          fi
+          echo "digest=$digest" >>"$GITHUB_OUTPUT"
+          echo "Published $IMAGE:$RELEASE_VERSION@$digest" >>"$GITHUB_STEP_SUMMARY"
+
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub release and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          IMAGE_DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          cat >"$RUNNER_TEMP/release-notes.md" <<EOF
+          Image: \`$IMAGE:$RELEASE_VERSION\`
+
+          Immutable image: \`$IMAGE@$IMAGE_DIGEST\`
+
+          Source: $GITHUB_SHA
+
+          CI: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          Account-free build and startup checks passed. Account-backed scan, restore,
+          retained-configuration replacement and TrueNAS acceptance require runtime testing.
+          EOF
+          gh release create "v$RELEASE_VERSION" \
+            --target "$GITHUB_SHA" \
+            --title "CrashPlan Headless $RELEASE_VERSION" \
+            --generate-notes \
+            --notes-file "$RUNNER_TEMP/release-notes.md"

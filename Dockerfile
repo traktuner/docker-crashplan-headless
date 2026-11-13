@@ -7,8 +7,8 @@ ARG CRASHPLAN_VERSION=
 ARG CRASHPLAN_BUILD=
 ARG CRASHPLAN_SHA256=
 ARG SOURCE_REVISION=main
-# Must be the same Java feature release as the JRE that CrashPlan ships
-# (checked below by running java -version against the bundled runtime).
+# Compile for the vendor's Java 25 runtime with --release 25.
+# Image tests verify the builder's launcher with the bundled vendor runtime.
 ARG TEMURIN_IMAGE=docker.io/library/eclipse-temurin:26-jdk-noble@sha256:9c0e8eddecccc0d5679b317b0c90fa7103ad25cae33df1c00280675eb681c7f8
 ARG DEBIAN_IMAGE=docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 ARG NODE_IMAGE=docker.io/library/node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1
@@ -115,7 +115,7 @@ RUN apt-get update \
 ENV CP_DIR=/usr/local/crashplan
 COPY --from=crashplan /work/app ${CP_DIR}
 # The bundled JRE has no bin/ (the stock launcher embeds libjvm). Borrow the
-# plain java launcher of the same feature release.
+# plain java launcher and verify it against the bundled runtime below.
 COPY --from=agent /opt/java/openjdk/bin/java ${CP_DIR}/jre/bin/java
 COPY --from=libwrapper /libwrapper.so ${CP_DIR}/nlib/libwrapper.so
 COPY --from=agent /cph-agent.jar ${CP_DIR}/cph/cph-agent.jar

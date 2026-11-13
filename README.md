@@ -67,8 +67,15 @@ Java patches, native libraries, Go tests/race checks, React tests/build and acco
 Renovate manages dependency updates. The upstream workflow proposes new CrashPlan releases.
 It checks the vendor download daily at 04:17 UTC and supports manual runs.
 New releases become a pull request with a pinned checksum; CI must pass before promotion.
-Image tags use `VERSION-VENDOR_BUILD-SOURCE_COMMIT`, for example `12.1.1-2-fb76ebc`.
-The source commit identifies this project's build; `2` is the vendor's build number.
+Each successful main build publishes an image and a GitHub release with generated change notes.
+Image tags use `VERSION-VENDOR_BUILD-rRUN.ATTEMPT`, for example `12.1.1-2-r18.1`.
+`2` is the vendor's build number. `18.1` identifies this project's workflow run and attempt.
+Build numbers can have gaps because PRs also run CI. A rebuilt job attempt receives a new image tag.
+The matching Git tag is `v12.1.1-2-r18.1`. Release notes include the exact source commit and image digest.
+The `VERSION-VENDOR_BUILD-SOURCE_COMMIT` image alias remains available, along with the floating
+`VERSION-VENDOR_BUILD` and `latest` aliases. Pin the digest for a reproducible deployment.
+PR builds never publish images or releases. A failed check or image push prevents release creation.
+An existing release is not overwritten.
 A changed contract blocks promotion until the integration is adapted. Existing cache is never rebuilt by CI.
 
 Real account registration/SSO/MFA, completed manual and scheduled scans, cloud restore checksums/metadata,
