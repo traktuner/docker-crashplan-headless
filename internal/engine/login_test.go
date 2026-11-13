@@ -112,7 +112,10 @@ func TestLoginAcceptsNamedResponseAndChecksSiblingErrors(t *testing.T) {
 
 func TestSSOUsesNativeBrowserFlowAndFinalizesOnlyOnce(t *testing.T) {
 	ready := make(chan *websocket.Conn, 1)
+	connected := make(chan struct{})
 	completed := make(chan Credentials, 2)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/LoginConfiguration":
@@ -124,6 +127,7 @@ func TestSSOUsesNativeBrowserFlowAndFinalizesOnlyOnce(t *testing.T) {
 				return
 			}
 			ready <- conn
+			close(connected)
 			defer conn.CloseNow()
 			for {
 				if _, _, err := conn.Read(r.Context()); err != nil {
@@ -131,8 +135,13 @@ func TestSSOUsesNativeBrowserFlowAndFinalizesOnlyOnce(t *testing.T) {
 				}
 			}
 		case "/v0/SsoAuthInitiateRequest":
-			if len(ready) == 0 {
+			// Accept sends HTTP 101 before this handler publishes the connection.
+			// Wait for that publication instead of assuming goroutine scheduling.
+			select {
+			case <-connected:
+			case <-ctx.Done():
 				t.Error("SSO started before native event connection")
+				return
 			}
 			io.WriteString(w, `{"errors":[],"ssoLoginUrls":[{"one":"Fixture provider","two":"https://login.fixture.invalid/login?uuid=private-canary"}]}`)
 		case "/v0/LoginRequest":
@@ -147,8 +156,6 @@ func TestSSOUsesNativeBrowserFlowAndFinalizesOnlyOnce(t *testing.T) {
 			w.WriteHeader(404)
 		}
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
 	attempt, err := c.BeginSSO(ctx, LoginInfo{Username: "fixture-user", ServerAddress: "console.fixture.invalid"})
 	if err != nil {
 		t.Fatal(err)
