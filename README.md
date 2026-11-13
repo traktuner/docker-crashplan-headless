@@ -64,7 +64,7 @@ and [module ownership](docs/architecture.md).
 
 `scripts/build.sh` builds the pinned release. CI checks native method and wire contracts,
 Java patches, native libraries, Go tests/race checks, React tests/build and account-free image startup.
-Dependabot proposes dependency updates. The upstream workflow proposes new CrashPlan releases.
+Renovate manages dependency updates. The upstream workflow proposes new CrashPlan releases.
 A changed contract blocks promotion until the integration is adapted. Existing cache is never rebuilt by CI.
 
 Real account registration/SSO/MFA, completed manual and scheduled scans, cloud restore checksums/metadata,
