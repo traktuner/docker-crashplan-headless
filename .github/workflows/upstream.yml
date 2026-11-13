@@ -26,7 +26,8 @@ jobs:
         run: |
           set -a; . ./versions.env; set +a
           current="$CRASHPLAN_VERSION-$CRASHPLAN_BUILD"
-          eval "$(scripts/resolve-latest.sh)"
+          resolved="$(scripts/resolve-latest.sh)"
+          eval "$resolved"
           latest="$CRASHPLAN_VERSION-$CRASHPLAN_BUILD"
           echo "current=$current latest=$latest"
           echo "latest=$latest" >>"$GITHUB_OUTPUT"
@@ -46,7 +47,8 @@ jobs:
             echo "branch $branch already exists"
             exit 0
           fi
-          eval "$(scripts/resolve-latest.sh --sha256)"
+          resolved="$(scripts/resolve-latest.sh --sha256)"
+          eval "$resolved"
           cat >versions.env <<EOF
           # CrashPlan Linux agent pinned for the image build.
           # Updated automatically by .github/workflows/upstream.yml (via pull request).
