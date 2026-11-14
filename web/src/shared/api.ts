@@ -61,6 +61,10 @@ const messages: Record<string, string> = {
     'CrashPlan temporarily limited sign-in attempts. Try again later.',
   NATIVE_AUTHORITY_UNAVAILABLE:
     'The account authority is unavailable. Try sign-in again later.',
+  NATIVE_AUTHORITY_REQUIRED:
+    'The server for this account could not be determined. Enter the server address.',
+  NATIVE_ACCOUNT_NOT_FOUND:
+    'CrashPlan found no account with this email address or username.',
   NATIVE_REGISTRATION_KEY_REQUIRED:
     'The authority supplied no registration key. Enter a valid registration key before creating the account.',
   NATIVE_REGISTRATION_REJECTED:
@@ -790,6 +794,9 @@ export class API {
       sourceComputerGuid,
       confirm: sourceComputerGuid,
     })
+  }
+  accountAuthority(username: string): Promise<{ serverAddress: string }> {
+    return this.request('/api/v1/account/authority', 'POST', { username })
   }
   accountConfiguration(
     info: LoginInfo,

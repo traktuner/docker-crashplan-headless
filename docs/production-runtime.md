@@ -32,7 +32,9 @@ Preserve its source mappings and saved heap limit.
 An ordinary replacement keeps the device identity; inheritance is for deliberately replacing a device.
 After moving an existing `/config`, for example from jlesage/docker-crashplan-pro, CrashPlan keeps backing up, but this container
 has no session of its own yet: sign in once with the same account. The log entry `native_sign_in_required` says so at start;
-the web interface opens on the sign-in page, and `cphctl login <username> <server>` reads the password from stdin.
+the web interface opens on the sign-in page. Enter the account email: the server is found automatically, as in the desktop app,
+and accounts with browser sign-in (password and verification code on the CrashPlan page) continue there.
+For password-only accounts, `cphctl login <username> <server>` reads the password from stdin.
 The session is then saved privately in `/config/cph` and restored at each start.
 
 Mount your data at `/storage`, or several folders below it.
