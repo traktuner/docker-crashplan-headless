@@ -4,13 +4,10 @@ import { Monitor, Moon, Sun } from 'lucide-react'
 export type Theme = 'system' | 'light' | 'dark'
 const key = 'cph-theme'
 
-export function savedTheme(): Theme {
-  try {
-    const value = localStorage.getItem(key)
-    return value === 'light' || value === 'dark' ? value : 'system'
-  } catch {
-    return 'system'
-  }
+// The page attribute is the source of truth; storage can be unavailable.
+export function currentTheme(): Theme {
+  const value = document.documentElement.dataset.theme
+  return value === 'light' || value === 'dark' ? value : 'system'
 }
 
 // 'system' leaves the choice to the operating system through CSS color-scheme.
@@ -33,15 +30,14 @@ const options = [
 ] as const
 
 export function ThemeSwitch() {
-  const [theme, setTheme] = useState<Theme>(savedTheme)
+  const [theme, setTheme] = useState<Theme>(currentTheme)
   return (
-    <div className="theme-switch" role="radiogroup" aria-label="Color theme">
+    <div className="theme-switch" role="group" aria-label="Color theme">
       {options.map(({ value, label, Icon }) => (
         <button
           key={value}
           type="button"
-          role="radio"
-          aria-checked={theme === value}
+          aria-pressed={theme === value}
           aria-label={label}
           title={label}
           className={theme === value ? 'is-active' : ''}

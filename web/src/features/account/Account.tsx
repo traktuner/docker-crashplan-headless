@@ -107,8 +107,8 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
             </p>
             <p>
               Your settings, backup sets and device identity in <code>/config</code>{' '}
-              are kept. Use the same CrashPlan account; the device keeps its
-              archive. The other pages open after sign-in.
+              are kept. Use the same CrashPlan account, so the device keeps its
+              identity. The other pages open after sign-in.
             </p>
           </div>
         </div>
@@ -271,8 +271,12 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
           </form>
         )}
       </section>
-      <AccountDevices />
-      <DeviceManagement />
+      {!firstSignIn && (
+        <>
+          <AccountDevices />
+          <DeviceManagement />
+        </>
+      )}
     </>
   )
 }

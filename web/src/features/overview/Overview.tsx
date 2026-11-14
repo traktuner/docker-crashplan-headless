@@ -62,6 +62,7 @@ export function Overview({ navigate }: { navigate: (page: Page) => void }) {
   const alerts = useQuery({
     queryKey: ['alerts'],
     queryFn: () => api.alerts(),
+    refetchInterval: 15000,
     enabled: authorized,
   })
   const healthy = health.error ? false : engineReady(health.data)

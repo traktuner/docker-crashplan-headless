@@ -181,7 +181,7 @@ export function AppFrame({
                       className={page === item.id ? 'active' : ''}
                       aria-current={page === item.id ? 'page' : undefined}
                       disabled={locked(item.id)}
-                      title={locked(item.id) ? 'Sign in to CrashPlan first' : undefined}
+                      aria-describedby={locked(item.id) ? 'nav-locked-hint' : undefined}
                       onClick={() => go(item.id)}
                     >
                       <Icon size={18} strokeWidth={1.8} />
@@ -193,7 +193,15 @@ export function AppFrame({
             </div>
           ))}
         </nav>
+        {signedIn === false && (
+          <p className="nav-locked-hint" id="nav-locked-hint">
+            Sign in to CrashPlan to open the other pages.
+          </p>
+        )}
         <div className="sidebar-bottom">
+          <div className="sidebar-theme">
+            <ThemeSwitch />
+          </div>
           {signedIn !== undefined && (
             <button
               className={'account-state ' + (signedIn ? 'is-signed-in' : 'is-signed-out')}
@@ -230,7 +238,9 @@ export function AppFrame({
             <strong>{current.label}</strong>
           </div>
           <div className="topbar-actions">
-            <ThemeSwitch />
+            <div className="topbar-theme">
+              <ThemeSwitch />
+            </div>
             <button
               className="navigation-search"
               aria-label="Find a page"

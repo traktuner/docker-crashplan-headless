@@ -18,10 +18,10 @@ export function refreshStatus(client: QueryClient) {
     {
       // A failed query without data returns to its loading state while it
       // refetches; refreshing it on every notification made the page flicker.
-      // Failed queries retry on their own interval instead.
+      // Such queries retry on their own interval instead.
       predicate: (query) =>
         statusKeys.has(String(query.queryKey[0])) &&
-        query.state.status !== 'error',
+        !(query.state.status === 'error' && query.state.data === undefined),
     },
     { cancelRefetch: false },
   )
