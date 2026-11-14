@@ -49,6 +49,7 @@ See [Configuration](docs/environment.md) for every option, and which ones are re
 - **Archives:** browsing and search, historical versions, local archives (create, attach, move).
 - **Security:** archive protection, password recovery, passphrase keys and explicit private key export.
 - **Operation:** health check, automatic engine restart, clean shutdown, rotated logs.
+- **Web interface:** light and dark theme; follows the system setting or a choice per browser.
 - **Memory diagnostics** on request: native memory tracking, flight recorder, heap dump.
 
 ## Moving from jlesage/docker-crashplan-pro
@@ -58,7 +59,10 @@ See [Configuration](docs/environment.md) for every option, and which ones are re
 3. Start this image with the same `/config` and the same `/storage/...` paths inside the container.
    Different paths look like new files to CrashPlan.
 
-Your device identity, settings, cache and heap are kept, and no new sign-in is usually needed.
+Your device identity, settings, backup sets, cache and heap are kept, and CrashPlan keeps backing up.
+Sign in once with the same CrashPlan account: the web interface opens on the sign-in page
+until this is done, or run `cphctl login <username> <server>` with the password on stdin.
+The device keeps its archive; no device adoption is needed.
 `USER_ID`, `GROUP_ID`, `SUP_GROUP_IDS`, `UMASK` and `CRASHPLAN_SRV_MAX_MEM` work the same way.
 One difference: without `USER_ID` the engine runs as root, so it can read every file you mount.
 Files in `/config` that belong to another user are taken over automatically.

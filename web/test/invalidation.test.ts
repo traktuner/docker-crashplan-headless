@@ -19,3 +19,18 @@ test('status events preserve slow browsing and deduplicate pending status reads'
  resolvers.forEach(r=>r());await Promise.all(pending)
  } finally {resolvers.forEach(r=>r());off.forEach(f=>f());client.clear()}
 })
+
+test('status events do not restart failed status reads', async () => {
+ const client = new QueryClient({defaultOptions:{queries:{retry:false}}})
+ let calls=0
+ const failing = new QueryObserver(client,{queryKey:['backup-summary'],queryFn:async()=>{calls++; throw new Error('NATIVE_AUTHORIZATION_REQUIRED')}})
+ const off=failing.subscribe(()=>{})
+ try {
+ await new Promise(r=>setTimeout(r,0))
+ assert.equal(calls,1)
+ await refreshStatus(client)
+ await new Promise(r=>setTimeout(r,0))
+ assert.equal(calls,1)
+ assert.equal(failing.getCurrentResult().status,'error')
+ } finally {off();client.clear()}
+})

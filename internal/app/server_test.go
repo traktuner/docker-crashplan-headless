@@ -223,3 +223,39 @@ func TestGenericNativeProxyIsNotAPublicProductRoute(t *testing.T) {
 		t.Fatal("generic native mutation is exposed", w.Code)
 	}
 }
+
+// A browser event stream must outlive the server's ReadTimeout; each reconnect
+// refreshes every status query and makes the interface visibly reload.
+func TestEventStreamOutlivesReadTimeout(t *testing.T) {
+	server, _, _ := newFixture(t)
+	cookie, _ := login(t, server.WebHandler())
+	web := httptest.NewUnstartedServer(server.WebHandler())
+	web.Config.ReadTimeout = 300 * time.Millisecond
+	web.StartTLS()
+	defer web.Close()
+	req, _ := http.NewRequest("GET", web.URL+"/api/v1/events", nil)
+	req.Host = "backup.fixture.invalid"
+	req.AddCookie(cookie)
+	response, err := web.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 200 {
+		t.Fatal("event stream refused", response.StatusCode)
+	}
+	first := make([]byte, 64)
+	if _, err := response.Body.Read(first); err != nil {
+		t.Fatal(err)
+	}
+	ended := make(chan error, 1)
+	go func() {
+		_, err := response.Body.Read(make([]byte, 64))
+		ended <- err
+	}()
+	select {
+	case err := <-ended:
+		t.Fatal("event stream ended after the read timeout", err)
+	case <-time.After(time.Second):
+	}
+}

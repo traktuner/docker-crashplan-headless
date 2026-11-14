@@ -11,10 +11,18 @@ const statusKeys = new Set([
   'restore-operations',
   'restore-helper',
   'migration',
+  'capabilities',
 ])
 export function refreshStatus(client: QueryClient) {
   return client.invalidateQueries(
-    { predicate: (query) => statusKeys.has(String(query.queryKey[0])) },
+    {
+      // A failed query without data returns to its loading state while it
+      // refetches; refreshing it on every notification made the page flicker.
+      // Failed queries retry on their own interval instead.
+      predicate: (query) =>
+        statusKeys.has(String(query.queryKey[0])) &&
+        query.state.status !== 'error',
+    },
     { cancelRefetch: false },
   )
 }

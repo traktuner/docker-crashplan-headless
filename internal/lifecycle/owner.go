@@ -288,6 +288,13 @@ func (o *Owner) monitor(g *generation) {
 				if err != nil {
 					outcome = "needs_login"
 					o.options.Logger.Warn("native_session_restore_unavailable")
+				} else if !o.options.Native.Authorized() {
+					// No saved session, for example after moving an existing /config.
+					// Settings and archives are kept; the account needs one sign-in.
+					outcome = "needs_login"
+				}
+				if outcome == "needs_login" {
+					o.options.Logger.Warn("native_sign_in_required", "hint", "sign in once on the web Account page or with: cphctl login <username> <server> (password on stdin)")
 				}
 				o.setState(g, func(s *State) { s.SessionRestore = outcome })
 			}
