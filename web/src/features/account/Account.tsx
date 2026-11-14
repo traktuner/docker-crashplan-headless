@@ -1,12 +1,37 @@
-import { DeviceManagement } from '../destinations/Devices'
 import { useState, useEffect, useRef } from 'react'
 import type { FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, ArrowRight } from 'lucide-react'
+import { ExternalLink, UserRound } from 'lucide-react'
 import { api, APIError } from '../../shared/api'
 import type { LoginInfo, LoginResult } from '../../shared/api'
-import { text, ErrorNotice, Loading, PageTitle } from '../../shared/components'
-import { AccountDevices } from './AccountDevices'
+import {
+  text,
+  Badge,
+  ErrorNotice,
+  Field,
+  Loading,
+  Notice,
+  Page,
+  Row,
+  Section,
+  Spinner,
+} from '../../shared/components'
+import { AccountDevices, DeviceNames } from './AccountDevices'
+import './account.css'
+
+type Provider = { name: string; url: string }
+
+// The sign-in page is CrashPlan's own; open it in a new tab when the browser
+// still allows it. Without permission the waiting view offers the link.
+function openSignInPage(providers: Provider[]): boolean {
+  const url = providers.length === 1 ? providers[0]?.url : undefined
+  if (!url || typeof window === 'undefined') return false
+  if (!/^https?:\/\//i.test(url)) return false
+  const tab = window.open(url, '_blank')
+  if (!tab) return false
+  tab.opener = null
+  return true
+}
 
 export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
   const client = useQueryClient()
@@ -23,13 +48,20 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
   const [result, setResult] = useState<LoginResult>()
   const [sso, setSSO] = useState<{
     id: string
-    providers: { name: string; url: string }[]
+    providers: Provider[]
   }>()
+  const [opened, setOpened] = useState(false)
+  // Validation messages appear only after a submit attempt.
+  const [tried, setTried] = useState(false)
+  // A signed-in account shows its summary; the form opens on request.
+  const [reauth, setReauth] = useState(false)
   // An engine that is still signed in knows its account and server, as in the
   // desktop app: the username is fixed and no server lookup is needed.
   const knownAccount =
     setup.data?.authenticated === true ? text(setup.data?.username) : ''
   const knownServer = text(setup.data?.authorityFullAddress)
+  const signedIn = !firstSignIn && setup.data?.authenticated === true
+  const showForm = !signedIn || reauth || !!sso
   useEffect(() => {
     if (!setup.data) return
     setInfo((old) => ({
@@ -38,6 +70,11 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
       username: knownAccount || old.username,
     }))
   }, [setup.data, knownAccount, knownServer])
+  const devices = useQuery({
+    queryKey: ['devices'],
+    queryFn: () => api.devices(),
+    enabled: signedIn,
+  })
   // Password sign-in only for accounts without verification code; the
   // desktop app always uses the browser.
   const [usePassword, setUsePassword] = useState(false)
@@ -97,7 +134,10 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
   })
   const beginSSO = useMutation({
     mutationFn: (value: LoginInfo) => api.accountSSO(value),
-    onSuccess: setSSO,
+    onSuccess: (data) => {
+      setSSO(data)
+      setOpened(openSignInPage(data.providers))
+    },
   })
   const cancelSSO = useMutation({
     mutationFn: () => api.cancelSSO(sso!.id),
@@ -130,230 +170,409 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
       confirmSSO.mutate()
     }
   }, [ssoState.data, confirmSSO])
+  // A completed sign-in returns to the account summary.
+  useEffect(() => {
+    if (result?.complete) setReauth(false)
+  }, [result])
   function field(name: keyof LoginInfo, value: string | boolean) {
     setInfo((old) => ({ ...old, [name]: value }))
     setLoginType(undefined)
     setResult(undefined)
   }
+  const passwordMode = loginType === 'local' && usePassword
+  const problems = {
+    username: !info.username.trim()
+      ? info.register
+        ? 'Enter the e-mail address for the new account.'
+        : 'Enter your CrashPlan e-mail address or user name.'
+      : '',
+    serverAddress:
+      manualServer && !info.serverAddress.trim()
+        ? 'Enter the address of your CrashPlan server.'
+        : '',
+    firstName:
+      info.register && !info.firstName?.trim() ? 'Enter a first name.' : '',
+    lastName:
+      info.register && !info.lastName?.trim() ? 'Enter a last name.' : '',
+    password: passwordMode && !password ? 'Enter your password.' : '',
+  }
+  const shown = (key: keyof typeof problems) =>
+    tried && problems[key] ? problems[key] : ''
   function submit(e: FormEvent) {
     e.preventDefault()
+    setTried(true)
+    if (Object.values(problems).some(Boolean)) return
+    setTried(false)
     if (!loginType) configuration.mutate()
     else if (loginType === 'local' && usePassword) login.mutate()
     else beginSSO.mutate(info)
   }
-  return (
-    <>
-      <PageTitle
-        title="CrashPlan account"
-        subtitle="Connect this device to your account."
-      />
-      {firstSignIn && (
-        <div className="notice" role="status">
-          <div>
-            <p>
-              <strong>Sign in to CrashPlan to continue.</strong>{' '}
-              {setup.data?.authenticated
-                ? 'CrashPlan is still signed in on this device and backups keep running. Sign in once more so this interface can manage it.'
-                : 'This device has no active CrashPlan session yet, for example after the first start.'}
-            </p>
-            <p>
-              Your settings, backup sets and device identity in <code>/config</code>{' '}
-              are kept. Use the same CrashPlan account, so the device keeps its
-              identity. The other pages open after sign-in.
-            </p>
+  const busy = configuration.isPending || login.isPending || beginSSO.isPending
+  const accountName =
+    [text(setup.data?.firstName), text(setup.data?.lastName)]
+      .filter(Boolean)
+      .join(' ') || knownAccount
+  const deviceName =
+    devices.data?.find((d) => d.self)?.name || text(setup.data?.osHostname)
+  const error =
+    configuration.error ??
+    login.error ??
+    beginSSO.error ??
+    ssoState.error ??
+    cancelSSO.error ??
+    confirmSSO.error ??
+    discardSSO.error
+  const differs = ssoState.data?.state === 'confirm' && ssoState.data.differs
+
+  const waiting = sso && (
+    <div className="account-form" aria-live="polite">
+      {differs ? (
+        <Notice tone="warning">
+          <p>
+            The sign-in page returned the account{' '}
+            <strong>{ssoState.data?.username}</strong>, which differs from the
+            one entered here.
+          </p>
+          <p>
+            Confirm this account to finish signing in. The response can also
+            belong to an earlier sign-in attempt in your browser.
+          </p>
+          <div className="button-row" style={{ marginTop: 8 }}>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={confirmSSO.isPending || discardSSO.isPending}
+              onClick={() => confirmSSO.mutate()}
+            >
+              Sign in as {ssoState.data?.username}
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={confirmSSO.isPending || discardSSO.isPending}
+              onClick={() => discardSSO.mutate()}
+            >
+              Discard this response
+            </button>
           </div>
-        </div>
-      )}
-      <section className="card form-card">
-        <ErrorNotice error={setup.error} />
-        {setup.isPending ? (
-          <Loading />
-        ) : (
-          <form onSubmit={submit}>
-            <label>
-              Email or username
-              <input
-                autoComplete="username"
-                autoCapitalize="none"
-                spellCheck={false}
-                value={info.username}
-                readOnly={!!knownAccount}
-                onChange={(e) => field('username', e.target.value)}
-                required
-              />
-            </label>
-            {manualServer ? (
-              <label>
-                Server address
-                <input
-                  value={info.serverAddress}
-                  onChange={(e) => field('serverAddress', e.target.value)}
-                  required
-                  spellCheck={false}
-                />
-              </label>
-            ) : (
-              <button
-                type="button"
-                className="text-button"
-                onClick={() => setManualServer(true)}
-              >
-                Use a specific server address
-              </button>
-            )}
-            <label className="checkbox">
-              <input
-                type="checkbox"
-                checked={!!info.register}
-                onChange={(e) => field('register', e.target.checked)}
-              />{' '}
-              Create a new CrashPlan account
-            </label>
-            {info.register && (
-              <>
-                <div className="columns">
-                  <label>
-                    First name
-                    <input
-                      value={info.firstName ?? ''}
-                      onChange={(e) => field('firstName', e.target.value)}
-                      required
-                    />
-                  </label>
-                  <label>
-                    Last name
-                    <input
-                      value={info.lastName ?? ''}
-                      onChange={(e) => field('lastName', e.target.value)}
-                      required
-                    />
-                  </label>
-                </div>
-                <label>
-                  Registration key
-                  <input
-                    type="password"
-                    value={info.registrationKey ?? ''}
-                    onChange={(e) => field('registrationKey', e.target.value)}
-                    autoComplete="off"
-                  />
-                </label>
-              </>
-            )}
-            {loginType === 'local' && usePassword && (
-              <label>
-                CrashPlan password
-                <input
-                  type="password"
-                  autoComplete={
-                    info.register ? 'new-password' : 'current-password'
-                  }
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
-              </label>
-            )}
-            <ErrorNotice
-              error={
-                configuration.error ??
-                login.error ??
-                beginSSO.error ??
-                ssoState.error ??
-                cancelSSO.error ??
-                confirmSSO.error ??
-                discardSSO.error
-              }
-            />
-            {result?.complete && (
-              <div className="notice success">
-                <Check size={18} /> Signed in to CrashPlan.
-              </div>
-            )}
-            {result && !result.complete && (
-              <div className="notice">
-                CrashPlan requires a device migration selection. Setup is not
-                complete.
-              </div>
-            )}
-            {!sso && loginType === 'local' && (
-              <button
-                type="button"
-                className="text-button"
-                onClick={() => setUsePassword(!usePassword)}
-              >
-                {usePassword
-                  ? 'Sign in through the browser instead'
-                  : 'Sign in with a password here (accounts without verification code)'}
-              </button>
-            )}
-            {!sso && (
-              <button
-                disabled={
-                  configuration.isPending ||
-                  login.isPending ||
-                  beginSSO.isPending
-                }
-              >
-                {!loginType
-                  ? 'Continue'
-                  : loginType === 'local' && usePassword
-                    ? 'Sign in to CrashPlan'
-                    : 'Continue in browser'}
-                <ArrowRight size={16} />
-              </button>
-            )}
-            {sso && (
-              <div className="sso">
-                <p>
-                  Open the CrashPlan sign-in page and sign in with your
-                  password and verification code. When it says you can close
-                  the window, come back here: sign-in completes by itself.
-                  Keep this page open.
-                </p>
-                {sso.providers.map((p) => (
-                  <a
-                    className="button"
-                    key={p.name}
-                    href={p.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    {p.name}
-                    <ArrowRight size={16} />
-                  </a>
-                ))}
-                {ssoState.data?.state === 'confirm' && ssoState.data.differs && (
-                  <div className="notice">
-                    <p>The sign-in provider returned <strong>{ssoState.data.username}</strong>.</p>
-                    {ssoState.data.differs && <p>This differs from the username entered above.</p>}
-                    <p>Confirm this account to complete sign-in. A provider response can belong to an earlier browser attempt.</p>
-                    <button type="button" disabled={confirmSSO.isPending || discardSSO.isPending} onClick={() => confirmSSO.mutate()}>
-                      Sign in as {ssoState.data.username}
-                    </button>
-                    <button type="button" className="secondary" disabled={confirmSSO.isPending || discardSSO.isPending} onClick={() => discardSSO.mutate()}>
-                      Discard this response
-                    </button>
-                  </div>
-                )}
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={() => cancelSSO.mutate()}
-                >
-                  Cancel sign-in
-                </button>
-              </div>
-            )}
-          </form>
-        )}
-      </section>
-      {!firstSignIn && (
+        </Notice>
+      ) : (
         <>
-          <AccountDevices />
-          <DeviceManagement />
+          <div className="account-waiting" role="status">
+            <Spinner />
+            {confirmSSO.isPending
+              ? 'Completing sign-in…'
+              : 'Waiting for you to finish signing in…'}
+          </div>
+          <p className="account-lead">
+            Enter your password and verification code on the CrashPlan page in
+            the other browser tab. When it says you can close the window, come
+            back here. Keep this page open; it continues by itself.
+          </p>
         </>
       )}
-    </>
+      <div className="button-row">
+        {sso.providers.map((p) => (
+          <a
+            className={'btn btn-sm' + (opened || differs ? '' : ' btn-primary')}
+            key={p.name}
+            href={p.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={() => setOpened(true)}
+          >
+            {sso.providers.length > 1
+              ? p.name
+              : opened
+                ? 'Open sign-in page again'
+                : 'Open CrashPlan sign-in page'}
+            <ExternalLink size={13} aria-hidden="true" />
+          </a>
+        ))}
+        <button
+          type="button"
+          className="btn btn-plain btn-sm"
+          disabled={cancelSSO.isPending}
+          onClick={() => cancelSSO.mutate()}
+        >
+          Cancel sign-in
+        </button>
+      </div>
+      <ErrorNotice error={error} />
+    </div>
+  )
+
+  const form = !sso && (
+    <form className="account-form" noValidate onSubmit={submit}>
+      <p className="account-lead">
+        {passwordMode
+          ? 'Enter the password of your CrashPlan account. This works only for accounts without a verification code.'
+          : info.register
+            ? 'CrashPlan opens its registration in a new browser tab. This page continues by itself when you are done.'
+            : 'A CrashPlan sign-in page opens in a new browser tab, where you enter your password and verification code. This page completes by itself.'}
+      </p>
+      <Field
+        label={info.register ? 'E-mail address' : 'E-mail or user name'}
+        hint={
+          knownAccount
+            ? 'CrashPlan on this device is linked to this account.'
+            : undefined
+        }
+      >
+        <input
+          className="input"
+          autoComplete="username"
+          autoCapitalize="none"
+          spellCheck={false}
+          placeholder={knownAccount ? undefined : 'user@example.com'}
+          value={knownAccount || info.username}
+          readOnly={!!knownAccount}
+          aria-invalid={!!shown('username')}
+          onChange={(e) => field('username', e.target.value)}
+        />
+        {shown('username') && (
+          <span className="field-error">{shown('username')}</span>
+        )}
+      </Field>
+      {manualServer && (
+        <Field
+          label="Server address"
+          hint="Only needed when CrashPlan cannot find your server from the e-mail address."
+        >
+          <input
+            className="input"
+            value={info.serverAddress}
+            aria-invalid={!!shown('serverAddress')}
+            onChange={(e) => field('serverAddress', e.target.value)}
+            spellCheck={false}
+            autoCapitalize="none"
+          />
+          {shown('serverAddress') && (
+            <span className="field-error">{shown('serverAddress')}</span>
+          )}
+        </Field>
+      )}
+      {info.register && (
+        <>
+          <div className="account-two">
+            <Field label="First name">
+              <input
+                className="input"
+                autoComplete="given-name"
+                value={info.firstName ?? ''}
+                aria-invalid={!!shown('firstName')}
+                onChange={(e) => field('firstName', e.target.value)}
+              />
+              {shown('firstName') && (
+                <span className="field-error">{shown('firstName')}</span>
+              )}
+            </Field>
+            <Field label="Last name">
+              <input
+                className="input"
+                autoComplete="family-name"
+                value={info.lastName ?? ''}
+                aria-invalid={!!shown('lastName')}
+                onChange={(e) => field('lastName', e.target.value)}
+              />
+              {shown('lastName') && (
+                <span className="field-error">{shown('lastName')}</span>
+              )}
+            </Field>
+          </div>
+          <Field
+            label="Registration key"
+            hint="Optional. Only if your organization gave you one."
+          >
+            <input
+              className="input"
+              type="password"
+              value={info.registrationKey ?? ''}
+              onChange={(e) => field('registrationKey', e.target.value)}
+              autoComplete="off"
+            />
+          </Field>
+        </>
+      )}
+      {passwordMode && (
+        <Field label="CrashPlan password">
+          <input
+            className="input"
+            type="password"
+            autoComplete={info.register ? 'new-password' : 'current-password'}
+            value={password}
+            aria-invalid={!!shown('password')}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          {shown('password') && (
+            <span className="field-error">{shown('password')}</span>
+          )}
+        </Field>
+      )}
+      <ErrorNotice error={error} />
+      <div className="button-row">
+        <button className="btn btn-primary" disabled={busy}>
+          {busy && <Spinner size={14} />}
+          {login.isPending
+            ? 'Signing in…'
+            : configuration.isPending || beginSSO.isPending
+              ? 'Opening sign-in…'
+              : passwordMode
+                ? info.register
+                  ? 'Create account'
+                  : 'Sign in'
+                : info.register
+                  ? 'Create account with CrashPlan'
+                  : 'Sign in with CrashPlan'}
+        </button>
+        {signedIn && (
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={() => {
+              setReauth(false)
+              setTried(false)
+            }}
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+      <div className="account-links">
+        {loginType === 'local' && (
+          <button
+            type="button"
+            className="btn btn-plain btn-sm"
+            onClick={() => {
+              setUsePassword(!usePassword)
+              setTried(false)
+            }}
+          >
+            {usePassword
+              ? 'Sign in through the browser instead'
+              : 'Sign in with a password instead'}
+          </button>
+        )}
+        {!manualServer && (
+          <button
+            type="button"
+            className="btn btn-plain btn-sm"
+            onClick={() => setManualServer(true)}
+          >
+            Use a specific server address
+          </button>
+        )}
+        {!signedIn && !knownAccount && (
+          <button
+            type="button"
+            className="btn btn-plain btn-sm"
+            onClick={() => {
+              field('register', !info.register)
+              setTried(false)
+            }}
+          >
+            {info.register
+              ? 'Sign in to an existing account instead'
+              : 'Create a new account instead'}
+          </button>
+        )}
+      </div>
+    </form>
+  )
+
+  return (
+    <Page
+      title="CrashPlan account"
+      subtitle="The CrashPlan account this device backs up to."
+    >
+      {firstSignIn && (
+        <Notice>
+          <p>
+            <strong>Sign in to CrashPlan to use this interface.</strong>{' '}
+            {setup.data?.authenticated
+              ? 'CrashPlan is still signed in on this device and backups keep running. Sign in once more so this interface can manage it.'
+              : 'This device has no active CrashPlan session yet, for example after the first start.'}
+          </p>
+          <p>
+            Your settings, backup sets and device identity in <code>/config</code>{' '}
+            are kept. Use the same CrashPlan account, so the device keeps its
+            identity. The other pages open after sign-in.
+          </p>
+        </Notice>
+      )}
+      {result?.complete && <Notice tone="success">Signed in to CrashPlan.</Notice>}
+      {result && !result.complete && (
+        <Notice tone="warning">
+          CrashPlan needs you to choose how this device is set up. Setup is
+          not complete until you choose below.
+        </Notice>
+      )}
+      {setup.isPending ? (
+        <Section title="Account">
+          <Loading />
+        </Section>
+      ) : (
+        <>
+          <ErrorNotice error={setup.error} />
+          {signedIn && (
+            <Section
+              title="Account"
+              actions={
+                !showForm && (
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => {
+                      setReauth(true)
+                      setResult(undefined)
+                    }}
+                  >
+                    Sign in again…
+                  </button>
+                )
+              }
+              footer={
+                !showForm &&
+                'Sign in again only if CrashPlan asks for it, for example after you changed your password.'
+              }
+            >
+              <Row
+                icon={
+                  <span className="row-icon">
+                    <UserRound size={16} aria-hidden="true" />
+                  </span>
+                }
+                title={accountName || 'CrashPlan account'}
+                detail={
+                  knownAccount && knownAccount !== accountName
+                    ? knownAccount
+                    : undefined
+                }
+                value={<Badge tone="green">Signed in</Badge>}
+              />
+              {knownServer && <Row title="Server" value={knownServer} />}
+              <Row
+                title="This device"
+                value={
+                  deviceName ||
+                  (devices.isPending ? 'Loading…' : 'Not reported')
+                }
+              />
+            </Section>
+          )}
+          {showForm && (
+            <Section title={signedIn ? 'Sign in again' : 'Sign in'}>
+              <div className="group-pad">{waiting || form}</div>
+            </Section>
+          )}
+        </>
+      )}
+      {!firstSignIn && (
+        <>
+          <DeviceNames />
+          <AccountDevices />
+        </>
+      )}
+    </Page>
   )
 }

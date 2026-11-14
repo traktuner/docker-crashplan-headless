@@ -1,0 +1,61 @@
+/* Account page. Layout only; colours and type come from the tokens in style.css. */
+.account-form {
+  display: grid;
+  gap: 14px;
+  max-width: 460px;
+}
+.account-form .button-row {
+  margin-top: 2px;
+}
+.account-two {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.account-lead {
+  font-size: 13px;
+  color: var(--label-2);
+  max-width: 60ch;
+}
+.account-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-left: -8px;
+}
+.field-error {
+  font-size: 12px;
+  color: var(--red);
+}
+.input[aria-invalid='true'] {
+  border-color: var(--red);
+}
+.account-waiting {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 500;
+}
+.account-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.account-inline .input {
+  flex: 1 1 200px;
+  width: auto;
+}
+.account-id {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--label-3);
+}
+@media (max-width: 560px) {
+  .account-two {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.disclosure[open] > summary + * {
+  border-top: 1px solid var(--separator);
+}

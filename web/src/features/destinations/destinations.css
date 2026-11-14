@@ -1,0 +1,27 @@
+/* Devices and local archives. Tokens only; shared parts live in style.css
+   and features/backup/backup.css (inline errors, bare fieldsets). */
+
+/* Destination and archive forms */
+.form-rows .row-control .select,
+.form-rows .row-control .input {
+  width: 260px;
+}
+.device-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.confirm-block {
+  background: var(--red-soft);
+}
+
+@media (max-width: 720px) {
+  .form-rows .row-control .select,
+  .form-rows .row-control .input {
+    width: 100%;
+  }
+  .device-row-actions {
+    justify-content: flex-start;
+  }
+}

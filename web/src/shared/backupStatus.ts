@@ -1,7 +1,7 @@
 // What is CrashPlan doing right now? The same decisions and wording as the
 // desktop app (backup_state.js), computed from GET /api/v1/backup/progress.
-import type { DestinationProgress, SetProgress } from './api'
-import { bytes, compactCount, duration, percent as pct, rate } from './format'
+import type { DestinationProgress, SetProgress } from './api.ts'
+import { bytes, compactCount, duration, percent as pct, rate } from './format.ts'
 
 export type StatusTone = 'active' | 'good' | 'warn' | 'bad' | 'idle'
 export interface BackupStatus {

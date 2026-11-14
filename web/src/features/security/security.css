@@ -1,0 +1,37 @@
+/* Security forms. Only design tokens from style.css. */
+.security-form {
+  display: grid;
+  gap: 16px;
+  max-width: 520px;
+}
+.security-form .segmented {
+  justify-self: start;
+}
+.security-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.security-error {
+  font-size: 12px;
+  color: var(--red);
+}
+.security-confirm code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--label);
+  user-select: all;
+}
+.security-success {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--green);
+}
+.security-question {
+  overflow-wrap: anywhere;
+}

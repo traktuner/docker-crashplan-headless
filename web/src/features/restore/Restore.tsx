@@ -1,39 +1,136 @@
 import { newRequestId } from '../../shared/requestId'
-import { useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useVirtualizer } from '@tanstack/react-virtual'
 import {
-  ArrowLeft,
+  ChevronLeft,
   ChevronRight,
   Download,
   File,
   Folder,
-  RefreshCw,
+  HardDrive,
+  Info,
+  Search,
+  X,
 } from 'lucide-react'
-import { api, APIError, identifier, archiveSelection, archiveSearchQuery } from '../../shared/api'
-import type {
-  ArchiveItem,
-  ArchiveQuery,
-  RestoreRequest,
-  RestoreSelection,
-} from '../../shared/api'
+import { api, identifier, archiveSelection, archiveSearchQuery } from '../../shared/api'
+import type { ArchiveItem, ArchiveQuery, RestoreRequest, RestoreSelection } from '../../shared/api'
+import {
+  Badge,
+  Empty,
+  ErrorNotice,
+  Field,
+  Loading,
+  Notice,
+  Page,
+  Progress,
+  Row,
+  Section,
+  Segmented,
+  Switch,
+} from '../../shared/components'
+import { baseName, bytes, count, dateTime, plural } from '../../shared/format'
+import {
+  deviceLabel,
+  insideSelected,
+  restoreDestinations,
+  restoreSets,
+  restoreSources,
+  toggleSelection,
+} from './model'
 
-function errorMessage(error: unknown) {
-  return error instanceof APIError
-    ? error.message
-    : 'The operation failed. Check the service logs.'
-}
-function Notice({ error }: { error: unknown }) {
-  return error ? (
-    <div className="notice error" role="alert">
-      {errorMessage(error)}
+const existingOptions = [
+  { value: 'RENAME_ORIGINAL', label: 'Keep both (rename the existing file)' },
+  { value: 'OVERWRITE_ORIGINAL', label: 'Replace the existing file' },
+  { value: 'SKIP_ALL', label: 'Skip the file' },
+  { value: 'SKIP_IF_NEWER', label: 'Skip if the existing file is newer' },
+  { value: 'SKIP_IF_OLDER', label: 'Skip if the existing file is older' },
+]
+
+function ItemDetails({
+  item,
+  query,
+  selection,
+  canExclude,
+  disabled,
+  onVersion,
+  onExclude,
+  onClose,
+}: {
+  item: ArchiveItem
+  query: ArchiveQuery
+  selection?: RestoreSelection
+  canExclude: boolean
+  disabled: boolean
+  onVersion: (timestamp: string, isFolder: boolean) => void
+  onExclude: () => void
+  onClose: () => void
+}) {
+  const versions = useQuery({
+    queryKey: ['archive-versions', query, item.fileId],
+    queryFn: () => api.archiveVersions({ ...query, fileId: item.fileId, cursor: undefined }),
+    enabled: !item.isFolder,
+  })
+  const contents = useMutation({
+    mutationFn: () => api.archiveContents({ ...query, fileId: item.fileId, cursor: undefined }),
+  })
+  return (
+    <div className="row-block" style={{ background: 'var(--surface-2)' }}>
+      <div className="button-row" style={{ justifyContent: 'space-between' }}>
+        <strong className="truncate" title={item.path}>
+          {item.path}
+        </strong>
+        <button className="icon-btn" aria-label="Close details" onClick={onClose}>
+          <X size={16} />
+        </button>
+      </div>
+      {!item.isFolder && (
+        <Field label="Version to restore">
+          {versions.isPending ? (
+            <Loading label="Loading versions…" />
+          ) : (
+            <select
+              className="select"
+              disabled={disabled}
+              value={selection?.timestamp ?? ''}
+              onChange={(e) => {
+                const v = versions.data?.find((x) => x.timestamp === e.target.value)
+                if (v) onVersion(v.timestamp, v.isFolder)
+              }}
+            >
+              <option value="">Latest version</option>
+              {versions.data?.map((v) => (
+                <option key={v.timestamp} value={v.timestamp}>
+                  {dateTime(v.timestamp)} · {bytes(v.size)}
+                </option>
+              ))}
+            </select>
+          )}
+        </Field>
+      )}
+      <ErrorNotice error={versions.error} />
+      <div className="button-row">
+        {item.isFolder && (
+          <button className="btn btn-sm" disabled={contents.isPending} onClick={() => contents.mutate()}>
+            {contents.isPending ? 'Calculating…' : 'Calculate size'}
+          </button>
+        )}
+        {canExclude && (
+          <button className="btn btn-sm" disabled={disabled} onClick={onExclude}>
+            Leave out of restore
+          </button>
+        )}
+      </div>
+      {contents.error && <Notice tone="error">The size could not be calculated.</Notice>}
+      {contents.data && (
+        <span className="row-detail">
+          {plural(Number(contents.data.files), 'file')}, {plural(Number(contents.data.directories), 'folder')},{' '}
+          {bytes(contents.data.bytes)}
+          {contents.data.done ? '' : ' so far — CrashPlan is still counting. Calculate again for the full result.'}
+        </span>
+      )}
     </div>
-  ) : null
-}
-function date(value: string) {
-  const d = new Date(Number(value))
-  return Number.isNaN(d.getTime()) ? value : d.toLocaleString()
+  )
 }
 
 export function Restore() {
@@ -42,136 +139,48 @@ export function Restore() {
   const [destination, setDestination] = useState('')
   const [set, setSet] = useState('')
   const [includeDeleted, setIncludeDeleted] = useState(false)
+  const [when, setWhen] = useState<'latest' | 'date'>('latest')
   const [at, setAt] = useState('')
   const [pattern, setPattern] = useState('')
-  const [fullPath, setFullPath] = useState(false)
   const [searchPattern, setSearchPattern] = useState('')
-  const [query, setQuery] = useState<ArchiveQuery>()
-  const [trail, setTrail] = useState<{ name: string; fileId: string }[]>([
-    { name: 'Archive', fileId: '' },
-  ])
+  const [trail, setTrail] = useState<{ name: string; fileId: string }[]>([])
   const [cursors, setCursors] = useState<string[]>([])
-  const [selection, setSelection] = useState<Record<string, RestoreSelection>>(
-    {},
-  )
+  const [cursor, setCursor] = useState<string>()
+  const [selection, setSelection] = useState<Record<string, RestoreSelection>>({})
   const [excluded, setExcluded] = useState<Record<string, RestoreSelection>>({})
   const [rootId, setRootId] = useState('')
-  const [restoreMode, setRestoreMode] = useState<'folder' | 'original'>(
-    'folder',
-  )
+  const [restoreMode, setRestoreMode] = useState<'folder' | 'original'>('folder')
   const [relative, setRelative] = useState('')
   const [existing, setExisting] = useState('RENAME_ORIGINAL')
-  const [permissions, setPermissions] = useState<'current' | 'original'>(
-    'current',
-  )
-  const [localError, setLocalError] = useState<unknown>()
-  const [versionItem, setVersionItem] = useState<ArchiveItem>()
+  const [permissions, setPermissions] = useState<'current' | 'original'>('current')
+  const [details, setDetails] = useState<ArchiveItem>()
   const [attempt, setAttempt] = useState<RestoreRequest>()
-  const devices = useQuery({
-    queryKey: ['devices'],
-    queryFn: () => api.devices(),
-  })
-  const sets = useQuery({
+  const restoreSection = useRef<HTMLDivElement>(null)
+
+  const devices = useQuery({ queryKey: ['devices'], queryFn: () => api.devices() })
+  const sources = restoreSources(devices.data)
+  const destinations = restoreDestinations(devices.data)
+  // Preselect this device and a single destination, like the desktop app.
+  useEffect(() => {
+    if (!source && sources.length) setSource(String(sources[0]!.id))
+    if (!destination && destinations.length === 1) setDestination(String(destinations[0]!.id))
+  }, [devices.data]) // eslint-disable-line react-hooks/exhaustive-deps
+  const archiveSets = useQuery({
     queryKey: ['archive-sets', source, destination],
     queryFn: () => api.archiveSets(source, destination),
     enabled: !!source && !!destination,
   })
-  const roots = useQuery({
-    queryKey: ['restore-roots'],
-    queryFn: () => api.restoreRoots(),
-  })
-  const jobs = useQuery({
-    queryKey: ['restore-jobs'],
-    queryFn: () => api.restoreJobs(),
-    refetchInterval: 15_000,
-  })
-  const operations = useQuery({
-    queryKey: ['restore-operations'],
-    queryFn: () => api.restoreOperations(),
-    refetchInterval: 15_000,
-  })
-  const archiveOperations = useMutation({
-    mutationFn: (ids: string[]) => api.archiveRestoreOperations(ids),
-    onSettled: () =>
-      client.invalidateQueries({ queryKey: ['restore-operations'] }),
-  })
-  const helper = useQuery({
-    queryKey: ['restore-helper'],
-    queryFn: () => api.restoreHelper(),
-    refetchInterval: 15_000,
-  })
-  const contents = useMutation({
-    mutationFn: (item: ArchiveItem) =>
-      api.archiveContents({
-        ...query!,
-        fileId: item.fileId,
-        cursor: undefined,
-      }),
-  })
-  const browse = useQuery({
-    queryKey: ['archive', query],
-    queryFn: () => api.browseArchive(query!),
-    enabled: !!query && !searchPattern,
-    staleTime: 60_000,
-  })
-  const search = useMutation({
-    mutationFn: (
-      request: ArchiveQuery & { pattern: string; fullPath: boolean },
-    ) =>
-      api.searchArchive(
-        archiveSearchQuery(
-          request,
-          devices.data?.find((device) => device.id === request.targetId)
-            ?.archiveType,
-        ),
-      ),
-  })
-  const resultPage = searchPattern ? search.data : browse.data
-  const fetching = searchPattern ? search.isPending : browse.isFetching
-  const versions = useMutation({
-    mutationFn: (item: ArchiveItem) =>
-      api.archiveVersions({
-        ...query!,
-        fileId: item.fileId,
-        cursor: undefined,
-      }),
-  })
-  const start = useMutation({
-    mutationFn: (request: RestoreRequest) =>
-      restoreMode === 'original'
-        ? api.startOriginalRestore(request)
-        : api.startRestore(request),
-    onSettled: () => {
-      void client.invalidateQueries({ queryKey: ['restore-operations'] })
-      void client.invalidateQueries({ queryKey: ['restore-jobs'] })
-    },
-  })
-  const control = useMutation({
-    mutationFn: ({
-      id,
-      action,
-    }: {
-      id: string
-      action: 'start' | 'stop' | 'remove'
-    }) => api.controlRestore(id, action),
-    onSettled: () => client.invalidateQueries({ queryKey: ['restore-jobs'] }),
-  })
-  const scroll = useRef<HTMLDivElement>(null)
-  const items = resultPage?.items ?? []
-  const virtual = useVirtualizer({
-    count: items.length,
-    getScrollElement: () => scroll.current,
-    estimateSize: () => 56,
-    overscan: 6,
-  })
+  const sets = restoreSets(archiveSets.data?.map((s) => ({ id: String(s.id), name: s.name })))
+  useEffect(() => {
+    if (sets && !sets.some((s) => s.id === set)) setSet(sets[0]?.id ?? '')
+  }, [archiveSets.data]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  function openArchive(e: FormEvent) {
-    e.preventDefault()
+  const cutoff = when === 'date' && at ? new Date(at).getTime() : 0
+  const badDate = when === 'date' && (!at || !Number.isSafeInteger(cutoff) || cutoff <= 0)
+  const base = useMemo<ArchiveQuery | undefined>(() => {
+    if (!source || !destination || !set || badDate) return undefined
     try {
-      const cutoff = at ? new Date(at).getTime() : 0
-      if (!Number.isSafeInteger(cutoff) || cutoff < 0)
-        throw new APIError('INVALID_REQUEST', 'Choose a valid archive date.')
-      setQuery({
+      return {
         sourceId: identifier(source),
         targetId: identifier(destination),
         backupSetId: identifier(set),
@@ -179,59 +188,95 @@ export function Restore() {
         at: String(cutoff),
         includeDeleted,
         limit: 200,
-      })
-      setSelection({})
-      setExcluded({})
-      setSearchPattern('')
-      setTrail([{ name: 'Archive', fileId: '' }])
-      setCursors([])
-      setVersionItem(undefined)
-      setLocalError(undefined)
-    } catch (error) {
-      setLocalError(error)
+      }
+    } catch {
+      return undefined
     }
-  }
-  function navigate(index: number, item?: ArchiveItem) {
-    if (!query) return
-    setSearchPattern('')
-    const next = item
-      ? [...trail, { name: item.path, fileId: item.fileId }]
-      : trail.slice(0, index + 1)
-    setTrail(next)
-    setQuery({ ...query, fileId: next.at(-1)!.fileId, cursor: undefined })
+  }, [source, destination, set, cutoff, includeDeleted, badDate])
+  // A new archive view starts at its top level with nothing selected.
+  const baseKey = JSON.stringify(base)
+  useEffect(() => {
+    setTrail([])
+    setCursor(undefined)
     setCursors([])
-    setVersionItem(undefined)
-    scroll.current?.scrollTo({ top: 0 })
+    setSelection({})
+    setExcluded({})
+    setDetails(undefined)
+    setSearchPattern('')
+    setPattern('')
+  }, [baseKey])
+  const query = base && {
+    ...base,
+    fileId: trail.at(-1)?.fileId ?? '',
+    cursor,
   }
-  function select(item: ArchiveItem) {
-    const next = { ...selection }
-    if (next[item.fileId]) delete next[item.fileId]
-    else
-      next[item.fileId] = archiveSelection(item, query!.backupSetId, query!.at)
-    setSelection(next)
-    setExcluded((old) =>
-      Object.fromEntries(
-        Object.entries(old).filter(
-          ([id, entry]) =>
-            !next[id] &&
-            Object.values(next).some(
-              (parent) =>
-                parent.isFolder &&
-                entry.path.startsWith(parent.path.replace(/\/$/, '') + '/'),
-            ),
-        ),
-      ),
-    )
+  const archiveType = devices.data?.find((d) => String(d.id) === destination)?.archiveType
+  const browse = useQuery({
+    queryKey: ['archive', query],
+    queryFn: () => api.browseArchive(query!),
+    enabled: !!query && !searchPattern,
+    staleTime: 60_000,
+  })
+  const search = useQuery({
+    queryKey: ['archive-search', query, searchPattern],
+    queryFn: () => api.searchArchive(archiveSearchQuery({ ...query!, pattern: searchPattern, fullPath: searchPattern.includes('/') }, archiveType)),
+    enabled: !!query && !!searchPattern,
+    staleTime: 60_000,
+  })
+  const page = searchPattern ? search : browse
+  const items = page.data?.items ?? []
+
+  const roots = useQuery({ queryKey: ['restore-roots'], queryFn: () => api.restoreRoots() })
+  useEffect(() => {
+    const writable = roots.data?.filter((r) => r.writable)
+    if (!rootId && writable?.length === 1) setRootId(String(writable[0]!.id))
+  }, [roots.data]) // eslint-disable-line react-hooks/exhaustive-deps
+  const jobs = useQuery({
+    queryKey: ['restore-jobs'],
+    queryFn: () => api.restoreJobs(),
+    refetchInterval: (q) => (q.state.data?.some((j) => !j.completed && !j.canceled) ? 3_000 : 15_000),
+  })
+  const operations = useQuery({ queryKey: ['restore-operations'], queryFn: () => api.restoreOperations(), refetchInterval: 15_000 })
+  const helper = useQuery({ queryKey: ['restore-helper'], queryFn: () => api.restoreHelper(), refetchInterval: 15_000 })
+  const archiveOperations = useMutation({
+    mutationFn: (ids: string[]) => api.archiveRestoreOperations(ids),
+    onSettled: () => client.invalidateQueries({ queryKey: ['restore-operations'] }),
+  })
+  const start = useMutation({
+    mutationFn: (request: RestoreRequest) =>
+      restoreMode === 'original' ? api.startOriginalRestore(request) : api.startRestore(request),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: ['restore-operations'] })
+      void client.invalidateQueries({ queryKey: ['restore-jobs'] })
+    },
+  })
+  const control = useMutation({
+    mutationFn: ({ id, action }: { id: string; action: 'start' | 'stop' | 'remove' }) => api.controlRestore(id, action),
+    onSettled: () => client.invalidateQueries({ queryKey: ['restore-jobs'] }),
+  })
+
+  function open(item: ArchiveItem) {
+    setSearchPattern('')
+    setTrail([...trail, { name: baseName(item.path), fileId: item.fileId }])
+    setCursor(undefined)
+    setCursors([])
+    setDetails(undefined)
+  }
+  function goTo(index: number) {
+    setSearchPattern('')
+    setTrail(trail.slice(0, index))
+    setCursor(undefined)
+    setCursors([])
+    setDetails(undefined)
+  }
+  function toggle(item: ArchiveItem) {
+    const result = toggleSelection(selection, excluded, item.fileId, archiveSelection(item, query!.backupSetId, query!.at))
+    setSelection(result.selection)
+    setExcluded(result.excluded)
   }
   function submit(e: FormEvent) {
     e.preventDefault()
-    if (
-      !query ||
-      attempt ||
-      Object.keys(selection).length === 0 ||
-      (restoreMode === 'folder' && rootId === '')
-    )
-      return
+    if (!query || attempt || Object.keys(selection).length === 0 || (restoreMode === 'folder' && rootId === '')) return
     const request: RestoreRequest = {
       requestId: newRequestId(),
       sourceId: query.sourceId,
@@ -246,722 +291,482 @@ export function Restore() {
     setAttempt(request)
     start.mutate(request)
   }
+  const selected = Object.keys(selection).length
+  const openJobs = jobs.data?.filter((j) => !j.completed && !j.canceled) ?? []
+  const pastJobs = jobs.data?.filter((j) => j.completed || j.canceled) ?? []
+  const helperProblem = helper.data && !['waiting', 'running', 'idle'].includes(helper.data.state)
+  const writableRoots = roots.data?.filter((r) => r.writable) ?? []
+
   return (
-    <>
-      <header className="page-title">
-        <h1>Restore</h1>
-        <p className="muted">
-          Browse archive versions and restore into a configured writable
-          directory.
-        </p>
-      </header>
-      <ol className="workflow-steps" aria-label="Restore progress">
-        {['Choose archive', 'Select files', 'Restore'].map((label, index) => {
-          const current = !query
-            ? 0
-            : Object.keys(selection).length === 0
-              ? 1
-              : 2
-          return (
-            <li
-              key={label}
-              className={
-                index < current ? 'done' : index === current ? 'current' : ''
-              }
-              aria-current={index === current ? 'step' : undefined}
-            >
-              <span>{index + 1}</span>
-              <strong>{label}</strong>
-            </li>
-          )
-        })}
-      </ol>
-      <Notice
-        error={
-          localError ??
-          devices.error ??
-          sets.error ??
-          roots.error ??
-          jobs.error ??
-          operations.error ??
-          archiveOperations.error ??
-          helper.error ??
-          (searchPattern ? search.error : browse.error) ??
-          start.error ??
-          control.error
-        }
-      />
-      <section className="card">
-        <h2>Choose your archive</h2>
-        <p className="muted">
-          Choose the source device, archive destination and backup set. Archived
-          devices remain available for restore.
-        </p>
-        <form onSubmit={openArchive}>
-          <div className="restore-fields">
-            <label>
-              Source device
-              <select
-                value={source}
-                onChange={(e) => {
-                  setSource(e.target.value)
-                  setSet('')
-                }}
-                required
-              >
-                <option value="">Choose a source</option>
-                {devices.data
-                  ?.filter((d) => d.source || d.self)
-                  .map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name || d.id}
-                      {d.deleted ? ' (archived device)' : ''}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <label>
-              Archive destination
-              <select
-                value={destination}
-                onChange={(e) => {
-                  setDestination(e.target.value)
-                  setSet('')
-                }}
-                required
-              >
-                <option value="">Choose a destination</option>
-                {devices.data
-                  ?.filter((d) => d.target || d.availableTarget)
-                  .map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name || d.id}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <label>
-              Backup set
-              <select
-                value={set}
-                onChange={(e) => setSet(e.target.value)}
-                required
-              >
-                <option value="">Choose a set</option>
-                {sets.data?.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name || s.id}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <label>
-            Archive as of (local time; blank means latest)
-            <input
-              type="datetime-local"
-              value={at}
-              onChange={(e) => setAt(e.target.value)}
-            />
-          </label>
-          <label className="checkbox">
-            <input
-              type="checkbox"
-              checked={includeDeleted}
-              onChange={(e) => setIncludeDeleted(e.target.checked)}
-            />{' '}
-            Include deleted files
-          </label>
-          <button className="secondary" disabled={fetching}>
-            Browse archive <ChevronRight size={16} />
-          </button>
-        </form>
-      </section>
+    <Page title="Restore" subtitle="Choose files from a backup and put them back.">
+      <ErrorNotice error={devices.error ?? archiveSets.error} />
+      <Section title="Restore from">
+        <Row title="Device" detail="Every device of your CrashPlan account can be restored here.">
+          <select className="select" aria-label="Device" value={source} onChange={(e) => setSource(e.target.value)}>
+            {!source && <option value="">Choose a device</option>}
+            {sources.map((d) => (
+              <option key={String(d.id)} value={String(d.id)}>
+                {deviceLabel(d)}
+              </option>
+            ))}
+          </select>
+        </Row>
+        <Row title="Backup destination">
+          {destinations.length === 1 ? (
+            <span className="row-value">{destinations[0]!.name}</span>
+          ) : (
+            <select className="select" aria-label="Backup destination" value={destination} onChange={(e) => setDestination(e.target.value)}>
+              {!destination && <option value="">Choose a destination</option>}
+              {destinations.map((d) => (
+                <option key={String(d.id)} value={String(d.id)}>
+                  {d.name || 'Destination'}
+                </option>
+              ))}
+            </select>
+          )}
+        </Row>
+        {sets && sets.length > 1 && (
+          <Row title="Backup set">
+            <select className="select" aria-label="Backup set" value={set} onChange={(e) => setSet(e.target.value)}>
+              {sets.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name || 'Backup set'}
+                </option>
+              ))}
+            </select>
+          </Row>
+        )}
+        <Row title="Show files as of">
+          <Segmented
+            label="Show files as of"
+            value={when}
+            onChange={setWhen}
+            options={[
+              { value: 'latest', label: 'Latest backup' },
+              { value: 'date', label: 'Date and time' },
+            ]}
+          />
+          {when === 'date' && (
+            <input className="input" type="datetime-local" aria-label="Date and time" value={at} onChange={(e) => setAt(e.target.value)} />
+          )}
+        </Row>
+        <Row title="Include deleted files" detail="Also show files that were deleted from the device.">
+          <Switch label="Include deleted files" checked={includeDeleted} onChange={setIncludeDeleted} />
+        </Row>
+      </Section>
+
       {query && (
-        <section className="card">
-          <p className="muted">
-            Browsing device {query.sourceId} · destination {query.targetId} ·
-            set {query.backupSetId}
-          </p>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              const term = pattern.trim()
-              setSearchPattern(term)
-              const next = { ...query, cursor: undefined }
-              setQuery(next)
-              setCursors([])
-              if (term) search.mutate({ ...next, pattern: term, fullPath })
-            }}
-          >
-            {devices.data?.find((device) => device.id === query.targetId)?.archiveType === 'ARCHIVE_V3' && (
-              <p className="muted">Search covers the selected archive, including all folders.</p>
-            )}
-            <label>
-              Search archive (wildcards * and ?)
+        <Section
+          title="Files"
+          description="Open folders to find what you need, then tick the files and folders to restore."
+          actions={
+            selected > 0 && (
+              <button className="btn btn-primary btn-sm" onClick={() => restoreSection.current?.scrollIntoView({ behavior: 'smooth' })}>
+                Restore {plural(selected, 'item')}…
+              </button>
+            )
+          }
+        >
+          <div className="row" style={{ flexWrap: 'wrap' }}>
+            <nav className="breadcrumbs" aria-label="Folder">
+              <button aria-current={trail.length === 0 && !searchPattern ? 'location' : undefined} onClick={() => goTo(0)}>
+                <HardDrive size={14} style={{ verticalAlign: '-2px', marginRight: 4 }} />
+                {devices.data?.find((d) => String(d.id) === source)?.name || 'Device'}
+              </button>
+              {trail.map((part, index) => (
+                <span key={part.fileId} style={{ display: 'inline-flex', alignItems: 'center' }}>
+                  <ChevronRight size={13} />
+                  <button aria-current={index === trail.length - 1 && !searchPattern ? 'location' : undefined} onClick={() => goTo(index + 1)}>
+                    {part.name}
+                  </button>
+                </span>
+              ))}
+              {searchPattern && (
+                <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                  <ChevronRight size={13} />
+                  <button aria-current="location">Search: {searchPattern}</button>
+                </span>
+              )}
+            </nav>
+            <form
+              noValidate
+              style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}
+              onSubmit={(e) => {
+                e.preventDefault()
+                setSearchPattern(pattern.trim())
+                setCursor(undefined)
+                setCursors([])
+              }}
+            >
+              <Search size={14} className="row-chevron" />
               <input
+                className="input"
+                style={{ width: 200, minHeight: 28 }}
+                placeholder="Search, e.g. *.pdf"
+                aria-label="Search the backup"
                 value={pattern}
                 maxLength={4096}
-                onChange={(e) => setPattern(e.target.value)}
-              />
-            </label>
-            <label className="checkbox">
-              <input
-                type="checkbox"
-                checked={fullPath}
-                onChange={(e) => setFullPath(e.target.checked)}
-              />{' '}
-              Match full path
-            </label>
-            <button className="secondary" disabled={fetching}>
-              Search
-            </button>
-            {searchPattern && (
-              <button
-                className="secondary"
-                type="button"
-                onClick={() => {
-                  setSearchPattern('')
-                  setQuery({ ...query, cursor: undefined })
-                  setCursors([])
+                onChange={(e) => {
+                  setPattern(e.target.value)
+                  if (!e.target.value) setSearchPattern('')
                 }}
-              >
-                Back to folders
-              </button>
-            )}
-          </form>
-          <div className="restore-breadcrumbs" aria-label="Archive location">
-            {trail.map((part, index) => (
-              <button
-                className="secondary"
-                key={part.fileId}
-                onClick={() => navigate(index)}
-                disabled={fetching}
-              >
-                {part.name}
-                <ChevronRight size={14} />
-              </button>
-            ))}
+              />
+            </form>
           </div>
-          {fetching ? (
-            <p role="status">Loading archive…</p>
+          <div className="file-row head" aria-hidden="true">
+            <span />
+            <span />
+            <span>Name</span>
+            <span style={{ textAlign: 'right' }}>Size</span>
+            <span>Modified</span>
+            <span />
+          </div>
+          {page.isFetching && !page.data ? (
+            <Loading label="Loading files…" />
+          ) : page.error ? (
+            <div className="row-block">
+              <ErrorNotice error={page.error} />
+            </div>
           ) : items.length === 0 ? (
-            <p className="muted">No archived items in this folder.</p>
+            <Empty icon={<Folder size={28} />} title={searchPattern ? 'No matches' : 'This folder is empty'}>
+              {searchPattern ? 'Try another name or a wildcard such as *.jpg.' : undefined}
+            </Empty>
           ) : (
-            <div
-              ref={scroll}
-              className="archive-list"
-              aria-label="Archived files"
-            >
-              <div
-                style={{ height: virtual.getTotalSize(), position: 'relative' }}
-              >
-                {virtual.getVirtualItems().map((row) => {
-                  const item = items[row.index]!
-                  return (
-                    <div
-                      className="archive-row"
-                      key={item.fileId}
-                      style={{
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
-                        width: '100%',
-                        height: row.size,
-                        transform: `translateY(${row.start}px)`,
-                      }}
-                    >
+            <div className="list-scroll">
+              {items.map((item) => {
+                const inside = insideSelected(item.path, selection)
+                const checked = !!selection[item.fileId] || (inside && !excluded[item.fileId])
+                return (
+                  <div key={item.fileId}>
+                    <div className="file-row">
                       <input
                         type="checkbox"
                         aria-label={'Select ' + item.path}
-                        checked={!!selection[item.fileId]}
-                        disabled={!!attempt}
-                        onChange={() => select(item)}
+                        checked={checked}
+                        disabled={!!attempt || (inside && !selection[item.fileId])}
+                        onChange={() => toggle(item)}
                       />
-                      {item.isFolder ? (
-                        <Folder size={19} />
-                      ) : (
-                        <File size={19} />
-                      )}
+                      {item.isFolder ? <Folder size={17} className="folder-icon" /> : <File size={17} className="file-icon" />}
                       <button
-                        className="archive-name"
+                        className={'name truncate ' + (item.isFolder ? 'folder' : '')}
                         title={item.path}
-                        disabled={!item.isFolder}
-                        onClick={() => navigate(0, item)}
+                        onClick={() => (item.isFolder ? open(item) : setDetails(item))}
                       >
-                        {item.path}
+                        {searchPattern ? item.path : baseName(item.path)}
+                        {excluded[item.fileId] && <Badge>Left out</Badge>}
+                        {selection[item.fileId] && selection[item.fileId]!.timestamp !== query.at && (
+                          <Badge tone="blue">Version {dateTime(selection[item.fileId]!.timestamp)}</Badge>
+                        )}
                       </button>
-                      <span className="muted">{item.size} B</span>
+                      <span className="size">{item.isFolder ? '' : bytes(item.size)}</span>
+                      <span className="date">{dateTime(item.modified)}</span>
                       <button
-                        className="secondary"
-                        disabled={
-                          !!attempt ||
-                          !Object.values(selection).some(
-                            (parent) =>
-                              parent.isFolder &&
-                              item.path.startsWith(
-                                parent.path.replace(/\/$/, '') + '/',
-                              ),
-                          )
-                        }
-                        onClick={() => {
-                          setExcluded((old) => ({
-                            ...old,
-                            [item.fileId]: archiveSelection(
-                              item,
-                              query.backupSetId,
-                              query.at,
-                            ),
-                          }))
-                          setSelection((old) => {
-                            const next = { ...old }
-                            delete next[item.fileId]
-                            return next
-                          })
-                        }}
+                        className="icon-btn"
+                        aria-label={'Details for ' + item.path}
+                        aria-expanded={details?.fileId === item.fileId}
+                        onClick={() => setDetails(details?.fileId === item.fileId ? undefined : item)}
                       >
-                        Exclude
-                      </button>
-                      <button
-                        className="secondary"
-                        disabled={item.isFolder}
-                        onClick={() => {
-                          setVersionItem(item)
-                          versions.mutate(item)
-                        }}
-                      >
-                        Versions
-                      </button>
-                      <button
-                        className="secondary"
-                        disabled={contents.isPending}
-                        onClick={() => contents.mutate(item)}
-                      >
-                        Size and counts
+                        <Info size={15} />
                       </button>
                     </div>
-                  )
-                })}
+                    {details?.fileId === item.fileId && (
+                      <ItemDetails
+                        item={item}
+                        query={query}
+                        selection={selection[item.fileId]}
+                        canExclude={inside && !selection[item.fileId]}
+                        disabled={!!attempt}
+                        onClose={() => setDetails(undefined)}
+                        onVersion={(timestamp, isFolder) =>
+                          setSelection((old) => ({
+                            ...old,
+                            [item.fileId]: { path: item.path, backupSetId: query.backupSetId, timestamp, isFolder },
+                          }))
+                        }
+                        onExclude={() => {
+                          setExcluded((old) => ({ ...old, [item.fileId]: archiveSelection(item, query.backupSetId, query.at) }))
+                          setDetails(undefined)
+                        }}
+                      />
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          {(page.data?.incomplete || cursors.length > 0 || page.data?.nextCursor) && (
+            <div className="row">
+              <span className="row-main row-detail">
+                {page.data?.incomplete ? 'Showing the first matches only. Narrow the search to see more.' : ''}
+              </span>
+              <div className="button-row">
+                <button
+                  className="btn btn-sm"
+                  disabled={cursors.length === 0 || page.isFetching}
+                  onClick={() => {
+                    setCursor(cursors.at(-1) || undefined)
+                    setCursors((old) => old.slice(0, -1))
+                  }}
+                >
+                  <ChevronLeft size={14} /> Previous
+                </button>
+                <button
+                  className="btn btn-sm"
+                  disabled={!page.data?.nextCursor || page.isFetching}
+                  onClick={() => {
+                    setCursors((old) => [...old, cursor ?? ''])
+                    setCursor(page.data!.nextCursor)
+                  }}
+                >
+                  Next <ChevronRight size={14} />
+                </button>
               </div>
             </div>
           )}
-          {contents.error && (
-            <div className="notice error" role="alert">
-              Selection statistics are unavailable.
+          {Object.keys(excluded).length > 0 && (
+            <div className="row-block">
+              <span className="row-detail">Left out of the restore:</span>
+              {Object.entries(excluded).map(([id, item]) => (
+                <div className="button-row" key={id}>
+                  <span className="truncate small">{item.path}</span>
+                  <button
+                    className="btn btn-plain btn-sm"
+                    disabled={!!attempt}
+                    onClick={() =>
+                      setExcluded((old) => {
+                        const next = { ...old }
+                        delete next[id]
+                        return next
+                      })
+                    }
+                  >
+                    Include again
+                  </button>
+                </div>
+              ))}
             </div>
           )}
-          {contents.data && (
-            <div className="notice" role="status">
-              {contents.data.files} files, {contents.data.directories} folders,{' '}
-              {contents.data.bytes} bytes.{' '}
-              {!contents.data.verified && 'The native response does not identify the complete archive view. Counts are unverified. '}
-              {contents.data.done
-                ? 'Count complete.'
-                : 'Count is incomplete; request again after the native calculation finishes.'}
-            </div>
-          )}
-          {resultPage?.incomplete && (
-            <div className="notice" role="status">
-              Search reached the result limit. More matches may exist. Narrow
-              the pattern.
-            </div>
-          )}
-          <div className="restore-paging">
-            <button
-              className="secondary"
-              disabled={cursors.length === 0 || fetching}
-              onClick={() => {
-                const previous = cursors.at(-1)
-                setCursors((old) => old.slice(0, -1))
-                const next = { ...query, cursor: previous || undefined }
-                setQuery(next)
-                if (searchPattern)
-                  search.mutate({ ...next, pattern: searchPattern, fullPath })
-                scroll.current?.scrollTo({ top: 0 })
-              }}
-            >
-              <ArrowLeft size={16} /> Previous page
-            </button>
-            <button
-              className="secondary"
-              disabled={!resultPage?.nextCursor || fetching}
-              onClick={() => {
-                setCursors((old) => [...old, query.cursor ?? ''])
-                const next = { ...query, cursor: resultPage!.nextCursor }
-                setQuery(next)
-                if (searchPattern)
-                  search.mutate({ ...next, pattern: searchPattern, fullPath })
-                scroll.current?.scrollTo({ top: 0 })
-              }}
-            >
-              Next page <ChevronRight size={16} />
-            </button>
-            <span className="muted">
-              {Object.keys(selection).length} selected
-            </span>
-          </div>
-          {versionItem && (
-            <div className="version-panel">
-              <h2>Versions of {versionItem.path}</h2>
-              <Notice error={versions.error} />
-              {versions.isPending ? (
-                <p role="status">Loading versions…</p>
+        </Section>
+      )}
+
+      {query && selected > 0 && (
+        <div ref={restoreSection}>
+          <Section title="Restore to">
+            <form noValidate onSubmit={submit}>
+              <Row title="Location">
+                <Segmented
+                  label="Location"
+                  value={restoreMode}
+                  onChange={setRestoreMode}
+                  options={[
+                    { value: 'folder', label: 'Restore folder' },
+                    { value: 'original', label: 'Original location' },
+                  ]}
+                />
+              </Row>
+              {restoreMode === 'original' ? (
+                <div className="row-block">
+                  <Notice>
+                    Files go back to where they were. Each original folder must still exist, be writable and lie inside a
+                    restore folder mounted into the container.
+                  </Notice>
+                </div>
               ) : (
-                <label>
-                  Restore version
-                  <select
-                    disabled={!!attempt}
-                    value={selection[versionItem.fileId]?.timestamp ?? ''}
-                    onChange={(e) => {
-                      const selected = versions.data?.find(
-                        (v) => v.timestamp === e.target.value,
-                      )
-                      if (selected)
-                        setSelection((old) => ({
-                          ...old,
-                          [versionItem.fileId]: {
-                            path: versionItem.path,
-                            backupSetId: query.backupSetId,
-                            timestamp: selected.timestamp,
-                            isFolder: selected.isFolder,
-                          },
-                        }))
-                    }}
-                  >
-                    <option value="">Choose a version</option>
-                    {versions.data?.map((v) => (
-                      <option key={v.timestamp} value={v.timestamp}>
-                        {date(v.timestamp)} · {v.size} B
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => setVersionItem(undefined)}
-              >
-                Close versions
-              </button>
-            </div>
-          )}
-        </section>
-      )}
-      {query && (
-        <section className="card form-card">
-          <h2>Excluded archive paths</h2>
-          {Object.entries(excluded).length === 0 ? (
-            <p className="muted">
-              No exclusions. Select a folder, then browse inside it to exclude
-              specific paths.
-            </p>
-          ) : (
-            Object.entries(excluded).map(([id, item]) => (
-              <p key={id}>
-                {item.path}{' '}
-                <button
-                  className="secondary"
-                  disabled={!!attempt}
-                  onClick={() =>
-                    setExcluded((old) => {
-                      const next = { ...old }
-                      delete next[id]
-                      return next
-                    })
-                  }
-                >
-                  Remove exclusion
-                </button>
-              </p>
-            ))
-          )}
-        </section>
-      )}
-      {query && Object.keys(selection).length > 0 && (
-        <section className="card form-card" id="restore-destination">
-          <h2>Restore destination</h2>
-          <form onSubmit={submit}>
-            <label>
-              Restore mode
-              <select
-                disabled={!!attempt}
-                value={restoreMode}
-                onChange={(e) =>
-                  setRestoreMode(e.target.value as 'folder' | 'original')
-                }
-              >
-                <option value="folder">Configured folder</option>
-                <option value="original">Original location</option>
-              </select>
-            </label>
-            {restoreMode === 'original' ? (
-              <p className="notice">
-                Each original parent directory must be writable and inside a
-                configured restore root. Files are grouped by parent into
-                separate jobs.
-              </p>
-            ) : (
-              <>
-                <label>
-                  Writable root
-                  <select
-                    value={rootId}
-                    disabled={!!attempt}
-                    onChange={(e) => setRootId(e.target.value)}
-                    required
-                  >
-                    <option value="">Choose a restore root</option>
-                    {roots.data?.map((root) => (
-                      <option
-                        key={root.id}
-                        value={root.id}
-                        disabled={!root.writable}
-                      >
-                        {root.path}
-                        {root.writable ? '' : ' (unavailable)'}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Existing subdirectory
-                  <input
-                    value={relative}
-                    onChange={(e) => setRelative(e.target.value)}
-                    placeholder="Leave empty to use the root"
-                    disabled={!!attempt}
-                  />
-                </label>
-              </>
-            )}
-            <label>
-              If a file exists
-              <select
-                value={existing}
-                disabled={!!attempt}
-                onChange={(e) => setExisting(e.target.value)}
-              >
-                <option value="RENAME_ORIGINAL">
-                  Rename the existing file
-                </option>
-                <option value="OVERWRITE_ORIGINAL">
-                  Overwrite the existing file
-                </option>
-                <option value="SKIP_ALL">Skip existing files</option>
-                <option value="SKIP_IF_NEWER">
-                  Skip when the existing file is newer
-                </option>
-                <option value="SKIP_IF_OLDER">
-                  Skip when the existing file is older
-                </option>
-              </select>
-            </label>
-            <label>
-              Permissions
-              <select
-                value={permissions}
-                disabled={!!attempt}
-                onChange={(e) =>
-                  setPermissions(e.target.value as 'current' | 'original')
-                }
-              >
-                <option value="current">Current user</option>
-                <option value="original">Original permissions</option>
-              </select>
-            </label>
-            <button
-              disabled={
-                !!attempt ||
-                (restoreMode === 'folder' && rootId === '') ||
-                Object.keys(selection).length === 0
-              }
-            >
-              <Download size={16} /> Restore selected items
-            </button>
-          </form>
-          {roots.data?.length === 0 && (
-            <p className="notice">
-              No restore roots are configured. Configure a writable restore
-              mount before submitting a job.
-            </p>
-          )}
-        </section>
-      )}
-      {attempt && (
-        <section className="card form-card">
-          <h2>Restore submission</h2>
-          <div className="restore-attempt">
-            <p>
-              Request <code>{attempt.requestId}</code>
-            </p>
-            {start.isPending ? (
-              <p role="status">Submitting restore…</p>
-            ) : (
-              <>
-                <p className="muted">
-                  {start.data?.state === 'accepted'
-                    ? 'CrashPlan accepted this request. Follow the job below; acceptance is not completion.'
-                    : 'Check the retained operations and native jobs before creating another request.'}
-                </p>
-                <button
-                  className="secondary"
-                  onClick={() => {
-                    if (
-                      confirm(
-                        'Start a different restore selection? The previous request remains recorded.',
-                      )
-                    ) {
-                      setAttempt(undefined)
-                      start.reset()
-                      setSelection({})
-                    }
-                  }}
-                >
-                  Prepare another restore
-                </button>
-              </>
-            )}
-          </div>
-        </section>
-      )}
-      <section className="card">
-        <div className="set-heading">
-          <h2>Restore jobs</h2>
-          <button
-            className="secondary"
-            onClick={() => {
-              void jobs.refetch()
-              void operations.refetch()
-              void helper.refetch()
-            }}
-          >
-            <RefreshCw size={16} /> Refresh
-          </button>
-        </div>
-        <p className="muted">
-          Helper: {helper.data?.state ?? 'Unavailable'}
-          {helper.data?.reason ? ' · ' + helper.data.reason : ''}
-        </p>
-        {jobs.data?.length === 0 && (
-          <p className="muted">No native restore jobs.</p>
-        )}
-        {jobs.data?.map((job) => (
-          <div className="restore-job" key={job.id}>
-            <h3>
-              Restore {job.id}{' '}
-              <span className="badge">
-                {job.completed
-                  ? 'Native completed'
-                  : job.canceled
-                    ? 'Canceled'
-                    : 'Open'}
-              </span>
-            </h3>
-            <p>{job.restorePath}</p>
-            <p className="muted">
-              {job.filesRestored} / {job.numFiles} files · {job.bytesRestored} /{' '}
-              {job.numBytes} B{job.imported ? ' · Imported job' : ''}
-            </p>
-            {!job.admissible && !job.completed && !job.canceled && (
-              <p className="notice">
-                The helper cannot run this job under the configured restore
-                roots.
-              </p>
-            )}
-            <div className="restore-paging">
-              {!job.completed && !job.canceled && (
                 <>
-                  <button
-                    className="secondary"
-                    disabled={control.isPending}
-                    onClick={() =>
-                      control.mutate({ id: job.id, action: 'stop' })
-                    }
-                  >
-                    Stop
-                  </button>
-                  <button
-                    className="secondary"
-                    disabled={control.isPending || !job.admissible}
-                    onClick={() =>
-                      control.mutate({ id: job.id, action: 'start' })
-                    }
-                  >
-                    Resume
-                  </button>
+                  <Row title="Restore folder" detail="A writable folder mounted into the container.">
+                    {writableRoots.length === 1 ? (
+                      <span className="row-value mono">{writableRoots[0]!.path}</span>
+                    ) : (
+                      <select className="select" aria-label="Restore folder" value={rootId} disabled={!!attempt} onChange={(e) => setRootId(e.target.value)}>
+                        <option value="">Choose a folder</option>
+                        {roots.data?.map((root) => (
+                          <option key={String(root.id)} value={String(root.id)} disabled={!root.writable}>
+                            {root.path}
+                            {root.writable ? '' : ' (not writable)'}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </Row>
+                  <Row title="Subfolder" detail="Optional. Must already exist inside the restore folder.">
+                    <input className="input" value={relative} placeholder="e.g. 2026-11-14" disabled={!!attempt} onChange={(e) => setRelative(e.target.value)} />
+                  </Row>
                 </>
               )}
-              <button
-                className="secondary"
-                disabled={control.isPending}
-                onClick={() => {
-                  if (
-                    confirm(
-                      'Remove this job from the native restore queue? Already restored files remain.',
-                    )
-                  )
-                    control.mutate({ id: job.id, action: 'remove' })
-                }}
-              >
-                Remove job
-              </button>
-            </div>
-          </div>
-        ))}
-      </section>
-      <section className="card">
-        <h2>Retained submissions</h2>
-        <p className="muted">
-          Unknown outcomes remain recorded. This list does not automatically
-          submit another restore.
-        </p>
-        {operations.data?.map((op) => (
-          <div className="restore-job" key={op.requestId}>
-            <code>{op.requestId}</code>
-            <p>
-              <span className="badge">{op.state}</span>{' '}
-              {op.restoreId
-                ? 'Native job ' + op.restoreId
-                : 'No confirmed native job ID'}
-            </p>
-            <p className="muted">
-              {op.restorePath} · {new Date(op.created).toLocaleString()}
-            </p>
-            {op.state !== 'indeterminate' &&
-              !operations.data?.some((parent) =>
-                parent.children?.includes(op.requestId),
-              ) && (
-                <button
-                  className="secondary"
-                  disabled={
-                    archiveOperations.isPending ||
-                    !jobs.data ||
-                    !!jobs.data.find(
-                      (job) =>
-                        job.id === op.restoreId &&
-                        !job.completed &&
-                        !job.canceled,
-                    )
-                  }
-                  onClick={() => {
-                    if (
-                      confirm(
-                        'Archive this completed or removed submission? Its permanent replay barrier is retained.',
-                      )
-                    )
-                      archiveOperations.mutate([
-                        op.requestId,
-                        ...(op.children ?? []),
-                      ])
-                  }}
+              <Row title="If a file already exists">
+                <select className="select" aria-label="If a file already exists" value={existing} disabled={!!attempt} onChange={(e) => setExisting(e.target.value)}>
+                  {existingOptions.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </Row>
+              <Row title="File permissions">
+                <select
+                  className="select"
+                  aria-label="File permissions"
+                  value={permissions}
+                  disabled={!!attempt}
+                  onChange={(e) => setPermissions(e.target.value as 'current' | 'original')}
                 >
-                  Archive history entry
-                </button>
-              )}
+                  <option value="current">Owned by the container user</option>
+                  <option value="original">Keep the original owner and permissions</option>
+                </select>
+              </Row>
+              <div className="row">
+                <div className="row-main">
+                  {roots.data?.length === 0 && restoreMode === 'folder' && (
+                    <Notice tone="warning">No restore folder is mounted. Add a writable volume at /restore to the container.</Notice>
+                  )}
+                  <ErrorNotice error={start.error} />
+                  {attempt && !start.isPending && start.data?.state === 'accepted' && (
+                    <Notice tone="success">CrashPlan started the restore. Follow it under Restores below.</Notice>
+                  )}
+                  {attempt && !start.isPending && start.data?.state !== 'accepted' && !start.error && (
+                    <Notice tone="warning">CrashPlan did not confirm the restore. Check Restores below before trying again.</Notice>
+                  )}
+                </div>
+                <div className="button-row">
+                  {attempt && !start.isPending && (
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => {
+                        setAttempt(undefined)
+                        start.reset()
+                        setSelection({})
+                        setExcluded({})
+                      }}
+                    >
+                      Prepare another restore
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-primary"
+                    disabled={!!attempt || (restoreMode === 'folder' && rootId === '')}
+                  >
+                    <Download size={15} />
+                    {start.isPending ? 'Starting…' : `Restore ${plural(selected, 'item')}`}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </Section>
+        </div>
+      )}
+
+      <Section title="Restores">
+        {helperProblem && (
+          <div className="row-block">
+            <Notice tone="warning">
+              The restore helper is not ready{helper.data?.reason ? `: ${helper.data.reason}` : '.'}
+            </Notice>
           </div>
-        ))}
-      </section>
-    </>
+        )}
+        <ErrorNotice error={jobs.error ?? control.error} />
+        {jobs.isPending ? (
+          <Loading />
+        ) : openJobs.length + pastJobs.length === 0 ? (
+          <div className="row">
+            <span className="row-main row-detail">No restores yet.</span>
+          </div>
+        ) : (
+          [...openJobs, ...pastJobs].map((job) => {
+            const total = BigInt(job.numBytes || '0')
+            const done = BigInt(job.bytesRestored || '0')
+            const value = total > 0n ? Number((done * 1000n) / total) / 10 : undefined
+            const running = !job.completed && !job.canceled
+            return (
+              <div className="row-block" key={job.id}>
+                <div className="button-row" style={{ justifyContent: 'space-between' }}>
+                  <span className="truncate mono" title={job.restorePath}>
+                    {job.restorePath}
+                  </span>
+                  <Badge tone={job.completed ? 'green' : job.canceled ? undefined : 'blue'}>
+                    {job.completed ? 'Completed' : job.canceled ? 'Stopped' : 'Restoring'}
+                  </Badge>
+                </div>
+                {running && <Progress value={value} label="Restore progress" />}
+                <div className="progress-line">
+                  <span>
+                    {count(job.filesRestored)} of {count(job.numFiles)} files · {bytes(job.bytesRestored)} of {bytes(job.numBytes)}
+                  </span>
+                  <span className="button-row">
+                    {running && (
+                      <>
+                        <button className="btn btn-sm" disabled={control.isPending} onClick={() => control.mutate({ id: job.id, action: 'stop' })}>
+                          Stop
+                        </button>
+                        <button
+                          className="btn btn-sm"
+                          disabled={control.isPending || !job.admissible}
+                          onClick={() => control.mutate({ id: job.id, action: 'start' })}
+                        >
+                          Resume
+                        </button>
+                      </>
+                    )}
+                    <button
+                      className="btn btn-sm btn-destructive"
+                      disabled={control.isPending}
+                      onClick={() => {
+                        if (confirm('Remove this restore from the list? Files already restored stay where they are.'))
+                          control.mutate({ id: job.id, action: 'remove' })
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </span>
+                </div>
+                {!job.admissible && running && (
+                  <span className="row-detail">This restore targets a folder outside the mounted restore folders and cannot run.</span>
+                )}
+              </div>
+            )
+          })
+        )}
+      </Section>
+
+      {(operations.data?.length ?? 0) > 0 && (
+        <details className="group disclosure">
+          <summary>
+            <ChevronRight size={14} />
+            Submitted restores ({operations.data!.length})
+          </summary>
+          <ErrorNotice error={operations.error ?? archiveOperations.error} />
+          {operations.data!.map((op) => (
+            <Row
+              key={op.requestId}
+              title={<span className="mono truncate">{op.restorePath}</span>}
+              detail={`${dateTime(op.created)} · ${
+                op.state === 'accepted' ? 'Accepted by CrashPlan' : op.state === 'rejected' ? 'Rejected' : 'Outcome unknown'
+              }`}
+            >
+              {op.state !== 'indeterminate' &&
+                !operations.data!.some((parent) => parent.children?.includes(op.requestId)) && (
+                  <button
+                    className="btn btn-sm"
+                    disabled={
+                      archiveOperations.isPending ||
+                      !jobs.data ||
+                      !!jobs.data.find((job) => job.id === op.restoreId && !job.completed && !job.canceled)
+                    }
+                    onClick={() => archiveOperations.mutate([op.requestId, ...(op.children ?? [])])}
+                  >
+                    Hide
+                  </button>
+                )}
+            </Row>
+          ))}
+        </details>
+      )}
+      {devices.data && sources.length === 0 && (
+        <Notice tone="warning">CrashPlan reports no device with a backup.</Notice>
+      )}
+      {base === undefined && when === 'date' && badDate && (
+        <Notice>Choose a date and time to see the files as they were then.</Notice>
+      )}
+    </Page>
   )
 }
