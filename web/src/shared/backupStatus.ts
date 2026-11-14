@@ -109,7 +109,7 @@ export const shortLabel: Record<StatusKind, string> = {
   disconnected: 'Disconnected',
   connecting: 'Not connected',
   blocked: 'Unavailable',
-  sync: 'Synchronizing',
+  sync: 'Syncing index',
   maintenance: 'Maintenance',
   scanning: 'Scanning',
   backup: 'Backing up',
@@ -188,25 +188,23 @@ function destinationCandidates(d: DestinationProgress, now: number): Candidate[]
     })
   if (d.validating) {
     const counter = d.sync
-    const what = counter?.files ? 'file' : 'block'
+    // The engine's counters count entries of the archive index (all versions), not your files;
+    // the stock app shows only the percentage, and only when it is meaningful.
     const known = counter && counter.percent >= 0 ? counter.percent : undefined
     out.push({
       rank: 3,
       status: {
         ...at,
         kind: 'sync',
-        title: `Synchronizing ${what} information`,
-        detail: 'Comparing the files on this computer with the files at the destination. Backup continues afterwards.',
+        title: 'Syncing backup index',
+        detail:
+          'CrashPlan is loading the list of already backed-up data from the destination, so that later only changes are sent. Backup continues afterwards.',
         tone: 'active',
         busy: true,
         actions: { run: false, pause: true, resume: false },
         progress: {
           value: known,
-          text: counter
-            ? known !== undefined
-              ? `${pct(known)} · ${compactCount(counter.current)} of ${compactCount(counter.total)} ${what}s`
-              : `${compactCount(counter.current)} ${what}s checked`
-            : 'This may take a few moments',
+          text: pct(known) ?? 'This can take a while for large backups',
         },
       },
     })
