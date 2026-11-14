@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import { api } from '../../shared/api'
-import { ErrorNotice, Notice, Page, Row, Section } from '../../shared/components'
+import { ErrorNotice, Notice, Page, Row, Section, useConfirm } from '../../shared/components'
 
 export function System() {
   const client = useQueryClient()
@@ -9,8 +9,10 @@ export function System() {
     mutationFn: () => api.restartEngine(),
     onSuccess: () => client.invalidateQueries(),
   })
+  const [confirmDialog, ask] = useConfirm()
   return (
     <Page title="System" subtitle="Manage the backup engine without recreating the container.">
+      {confirmDialog}
       <Section
         title="Backup engine"
         footer="Your configuration and backup history stay on the persistent volume."
@@ -28,8 +30,15 @@ export function System() {
             type="button"
             className="btn btn-destructive"
             disabled={restart.isPending}
-            onClick={() => {
-              if (confirm('Restart the CrashPlan engine? Active work will be interrupted.'))
+            onClick={async () => {
+              if (
+                await ask({
+                  title: 'Restart CrashPlan?',
+                  message: 'Backups and restores that are running are interrupted. They continue after the engine is back.',
+                  confirm: 'Restart',
+                  destructive: true,
+                })
+              )
                 restart.mutate()
             }}
           >

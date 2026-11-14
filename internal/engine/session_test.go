@@ -56,9 +56,15 @@ func TestNativeSessionRestartsOnlyAfterAutoLoginValidation(t *testing.T) {
 	if err := c.RestoreSession(context.Background()); err != nil || c.Authorized() {
 		t.Fatal("ineligible auto-login restored", err)
 	}
+	// One valid:false must not erase the saved session; only a successful
+	// sign-in replaces it. A later eligible answer restores the session.
 	raw, err := store.Read("native-session")
-	if err != nil || string(raw) != "" {
-		t.Fatal("ineligible persisted token not cleared", err)
+	if err != nil || string(raw) == "" {
+		t.Fatal("ineligible answer erased the saved token", err)
+	}
+	valid = true
+	if err := c.RestoreSession(context.Background()); err != nil || !c.Authorized() {
+		t.Fatal("saved session not restored after a transient valid:false", err)
 	}
 }
 

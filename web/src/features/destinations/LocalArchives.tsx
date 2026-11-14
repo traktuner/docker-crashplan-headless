@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight } from 'lucide-react'
 import { api, APIError } from '../../shared/api'
 import type { LocalArchiveRequest } from '../../shared/api'
-import { ErrorNotice, Notice, Section } from '../../shared/components'
+import { ErrorNotice, Notice, Section, TechnicalDetails } from '../../shared/components'
 import { newRequestId } from '../../shared/requestId'
 import { InlineError } from '../backup/controls'
 import { outcome } from './outcome'
@@ -262,6 +262,9 @@ export function LocalArchives() {
                   className="input"
                   aria-label="Folder inside the storage root"
                   placeholder="backups/crashplan"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   value={relative}
                   onChange={(e) => setRelative(e.target.value)}
                 />
@@ -272,6 +275,8 @@ export function LocalArchives() {
                   aria-label={`Type ${word} to confirm`}
                   value={confirm}
                   autoComplete="off"
+                  autoCapitalize="characters"
+                  autoCorrect="off"
                   spellCheck={false}
                   onChange={(e) => setConfirm(e.target.value)}
                 />
@@ -280,12 +285,10 @@ export function LocalArchives() {
             <div className="row">
               <div className="row-main">
                 {attempt && (
-                  <span
-                    className="row-detail"
-                    title="Sending this request again returns its stored result instead of running it twice."
-                  >
-                    Request {attempt.requestId}
-                  </span>
+                  <TechnicalDetails>
+                    Request <code>{attempt.requestId}</code>. Sending it again returns its stored
+                    result instead of running it twice.
+                  </TechnicalDetails>
                 )}
               </div>
               <div className="button-row">
@@ -336,16 +339,17 @@ export function LocalArchives() {
             {result.jobId && (
               <p>
                 The files are copied in the background. Accepted does not mean the copy has
-                finished. <span className="muted">Job {result.jobId}</span>
+                finished.
               </p>
             )}
-            {result.destinationId && (
-              <p>
-                Destination: {deviceName(result.destinationId)}{' '}
-                <span className="muted">(ID {result.destinationId})</span>
-              </p>
-            )}
+            {result.destinationId && <p>Destination: {deviceName(result.destinationId)}</p>}
           </Notice>
+          {(result.jobId || result.destinationId) && (
+            <TechnicalDetails>
+              {result.jobId && <>Copy job <code>{result.jobId}</code>. </>}
+              {result.destinationId && <>Destination identifier <code>{result.destinationId}</code>.</>}
+            </TechnicalDetails>
+          )}
         </div>
       )}
     </Section>

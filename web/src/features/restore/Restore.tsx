@@ -28,12 +28,15 @@ import {
   Section,
   Segmented,
   Switch,
+  TechnicalDetails,
+  useConfirm,
 } from '../../shared/components'
-import { baseName, bytes, count, dateTime, plural } from '../../shared/format'
+import { baseName, bytes, count, dateTime, duration, plural, rate } from '../../shared/format'
 import {
   deviceLabel,
   insideSelected,
   restoreDestinations,
+  restoreJobView,
   restoreSets,
   restoreSources,
   toggleSelection,
@@ -75,11 +78,9 @@ function ItemDetails({
     mutationFn: () => api.archiveContents({ ...query, fileId: item.fileId, cursor: undefined }),
   })
   return (
-    <div className="row-block" style={{ background: 'var(--surface-2)' }}>
-      <div className="button-row" style={{ justifyContent: 'space-between' }}>
-        <strong className="truncate" title={item.path}>
-          {item.path}
-        </strong>
+    <div className="row-block item-details">
+      <div className="button-row item-details-head">
+        <strong className="wrap-anywhere">{item.path}</strong>
         <button className="icon-btn" aria-label="Close details" onClick={onClose}>
           <X size={16} />
         </button>
@@ -157,6 +158,7 @@ export function Restore() {
   const [details, setDetails] = useState<ArchiveItem>()
   const [attempt, setAttempt] = useState<RestoreRequest>()
   const restoreSection = useRef<HTMLDivElement>(null)
+  const [confirmDialog, ask] = useConfirm()
 
   const devices = useQuery({ queryKey: ['devices'], queryFn: () => api.devices() })
   const sources = restoreSources(devices.data)
@@ -255,6 +257,10 @@ export function Restore() {
     mutationFn: ({ id, action }: { id: string; action: 'start' | 'stop' | 'remove' }) => api.controlRestore(id, action),
     onSettled: () => client.invalidateQueries({ queryKey: ['restore-jobs'] }),
   })
+  const clearCompleted = useMutation({
+    mutationFn: () => api.clearCompletedRestores(),
+    onSettled: () => client.invalidateQueries({ queryKey: ['restore-jobs'] }),
+  })
 
   function open(item: ArchiveItem) {
     setSearchPattern('')
@@ -293,13 +299,15 @@ export function Restore() {
     start.mutate(request)
   }
   const selected = Object.keys(selection).length
-  const openJobs = jobs.data?.filter((j) => !j.completed && !j.canceled) ?? []
-  const pastJobs = jobs.data?.filter((j) => j.completed || j.canceled) ?? []
+  const views = new Map((jobs.data ?? []).map((j) => [j.id, restoreJobView(j)]))
+  const openJobs = jobs.data?.filter((j) => !views.get(j.id)!.finished) ?? []
+  const pastJobs = jobs.data?.filter((j) => views.get(j.id)!.finished) ?? []
   const helperProblem = helper.data && !['waiting', 'running', 'idle'].includes(helper.data.state)
   const writableRoots = roots.data?.filter((r) => r.writable) ?? []
 
   return (
-    <Page title="Restore" subtitle="Choose files from a backup and put them back.">
+    <Page title="Restore files" subtitle="Choose files from a backup and put them back.">
+      {confirmDialog}
       <ErrorNotice error={devices.error ?? archiveSets.error} />
       <Section title="Restore from">
         <Row title="Device" detail="Every device of your CrashPlan account can be restored here.">
@@ -337,7 +345,10 @@ export function Restore() {
             </select>
           </Row>
         )}
-        <Row title="Show files as of">
+        <Row
+          title="Show files as of"
+          detail={when === 'date' && badDate ? 'Choose a date and time to see the files as they were then.' : undefined}
+        >
           <Segmented
             label="Show files as of"
             value={when}
@@ -357,6 +368,14 @@ export function Restore() {
         </Row>
       </Section>
 
+      {!query && !badDate && sources.length > 0 && destinations.length > 1 && !destination && (
+        <Section title="Files">
+          <Empty icon={<HardDrive size={28} />} title="Choose a backup destination">
+            Pick where the backup is stored to see its files.
+          </Empty>
+        </Section>
+      )}
+
       {query && (
         <Section
           title="Files"
@@ -369,7 +388,7 @@ export function Restore() {
             )
           }
         >
-          <div className="row" style={{ flexWrap: 'wrap' }}>
+          <div className="row files-toolbar">
             <nav className="breadcrumbs" aria-label="Folder">
               <button aria-current={trail.length === 0 && !searchPattern ? 'location' : undefined} onClick={() => goTo(0)}>
                 <HardDrive size={14} style={{ verticalAlign: '-2px', marginRight: 4 }} />
@@ -392,7 +411,7 @@ export function Restore() {
             </nav>
             <form
               noValidate
-              style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}
+              className="archive-search"
               onSubmit={(e) => {
                 e.preventDefault()
                 setSearchPattern(pattern.trim())
@@ -400,10 +419,14 @@ export function Restore() {
                 setCursors([])
               }}
             >
-              <Search size={14} className="row-chevron" />
+              <Search size={14} className="row-chevron" aria-hidden="true" />
               <input
                 className="input"
-                style={{ width: 200, minHeight: 28 }}
+                type="search"
+                enterKeyHint="search"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 placeholder="Search, e.g. *.pdf"
                 aria-label="Search the backup"
                 value={pattern}
@@ -419,8 +442,8 @@ export function Restore() {
             <span />
             <span />
             <span>Name</span>
-            <span style={{ textAlign: 'right' }}>Size</span>
-            <span>Modified</span>
+            <span className="size">Size</span>
+            <span className="date">Modified</span>
             <span />
           </div>
           {page.isFetching && !page.data ? (
@@ -441,17 +464,18 @@ export function Restore() {
                 return (
                   <div key={item.fileId}>
                     <div className="file-row">
-                      <input
-                        type="checkbox"
-                        aria-label={'Select ' + item.path}
-                        checked={checked}
-                        disabled={!!attempt || (inside && !selection[item.fileId])}
-                        onChange={() => toggle(item)}
-                      />
+                      <label className="hit">
+                        <input
+                          type="checkbox"
+                          aria-label={'Select ' + item.path}
+                          checked={checked}
+                          disabled={!!attempt || (inside && !selection[item.fileId])}
+                          onChange={() => toggle(item)}
+                        />
+                      </label>
                       {item.isFolder ? <Folder size={17} className="folder-icon" /> : <File size={17} className="file-icon" />}
                       <button
                         className={'name truncate ' + (item.isFolder ? 'folder' : '')}
-                        title={item.path}
                         onClick={() => (item.isFolder ? open(item) : setDetails(item))}
                       >
                         {searchPattern ? item.path : baseName(item.path)}
@@ -460,8 +484,10 @@ export function Restore() {
                           <Badge tone="blue">Version {dateTime(selection[item.fileId]!.timestamp)}</Badge>
                         )}
                       </button>
-                      <span className="size">{item.isFolder ? '' : bytes(item.size)}</span>
-                      <span className="date">{dateTime(item.modified)}</span>
+                      <span className="meta">
+                        <span className="size">{item.isFolder ? '' : bytes(item.size)}</span>
+                        <span className="date">{dateTime(item.modified)}</span>
+                      </span>
                       <button
                         className="icon-btn"
                         aria-label={'Details for ' + item.path}
@@ -530,7 +556,7 @@ export function Restore() {
               <span className="row-detail">Left out of the restore:</span>
               {Object.entries(excluded).map(([id, item]) => (
                 <div className="button-row" key={id}>
-                  <span className="truncate small">{item.path}</span>
+                  <span className="truncate small" title={item.path}>{item.path}</span>
                   <button
                     className="btn btn-plain btn-sm"
                     disabled={!!attempt}
@@ -592,7 +618,17 @@ export function Restore() {
                     )}
                   </Row>
                   <Row title="Subfolder" detail="Optional. Must already exist inside the restore folder.">
-                    <input className="input" aria-label="Subfolder" value={relative} placeholder="e.g. 2026-11-14" disabled={!!attempt} onChange={(e) => setRelative(e.target.value)} />
+                    <input
+                      className="input"
+                      aria-label="Subfolder"
+                      value={relative}
+                      placeholder="e.g. 2026-11-14"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      disabled={!!attempt}
+                      onChange={(e) => setRelative(e.target.value)}
+                    />
                   </Row>
                 </>
               )}
@@ -623,16 +659,17 @@ export function Restore() {
                     <Notice tone="warning">No restore folder is mounted. Add a writable volume at /restore to the container.</Notice>
                   )}
                   <ErrorNotice error={start.error} />
-                  {attempt && (
-                    <span className="row-detail">
-                      Request <code>{attempt.requestId}</code>
-                    </span>
-                  )}
                   {attempt && !start.isPending && start.data?.state === 'accepted' && (
                     <Notice tone="success">CrashPlan started the restore. Follow it under Restores below.</Notice>
                   )}
                   {attempt && !start.isPending && start.data?.state !== 'accepted' && !start.error && (
                     <Notice tone="warning">CrashPlan did not confirm the restore. Check Restores below before trying again.</Notice>
+                  )}
+                  {attempt && (
+                    <TechnicalDetails>
+                      Request <code>{attempt.requestId}</code>. Sending it again returns its saved outcome instead of
+                      starting a second restore.
+                    </TechnicalDetails>
                   )}
                 </div>
                 <div className="button-row">
@@ -640,8 +677,15 @@ export function Restore() {
                     <button
                       type="button"
                       className="btn"
-                      onClick={() => {
-                        if (!confirm('Start a new restore selection? The previous request stays listed under Restores.')) return
+                      onClick={async () => {
+                        if (
+                          !(await ask({
+                            title: 'Prepare another restore?',
+                            message: 'Your current selection is cleared. The previous request stays listed under Restores.',
+                            confirm: 'Prepare another',
+                          }))
+                        )
+                          return
                         setAttempt(undefined)
                         start.reset()
                         setSelection({})
@@ -665,7 +709,16 @@ export function Restore() {
         </div>
       )}
 
-      <Section title="Restores">
+      <Section
+        title="Restores"
+        actions={
+          pastJobs.length > 0 && (
+            <button className="btn btn-plain btn-sm" disabled={clearCompleted.isPending} onClick={() => clearCompleted.mutate()}>
+              Clear completed
+            </button>
+          )
+        }
+      >
         {helperProblem && (
           <div className="row-block">
             <Notice tone="warning">
@@ -673,7 +726,15 @@ export function Restore() {
             </Notice>
           </div>
         )}
-        <ErrorNotice error={jobs.error ?? control.error} />
+        <ErrorNotice error={jobs.error ?? control.error ?? clearCompleted.error} />
+        {clearCompleted.data?.incomplete && (
+          <div className="row-block">
+            <Notice tone="warning">
+              Removed {clearCompleted.data.removed} completed {clearCompleted.data.removed === 1 ? 'restore' : 'restores'}. The others are
+              still listed because CrashPlan did not confirm their removal. Try again in a moment.
+            </Notice>
+          </div>
+        )}
         {jobs.isPending ? (
           <Loading />
         ) : openJobs.length + pastJobs.length === 0 ? (
@@ -682,45 +743,48 @@ export function Restore() {
           </div>
         ) : (
           [...openJobs, ...pastJobs].map((job) => {
+            const view = views.get(job.id)!
             const total = BigInt(job.numBytes || '0')
             const done = BigInt(job.bytesRestored || '0')
             const value = total > 0n ? Number((done * 1000n) / total) / 10 : undefined
-            const running = !job.completed && !job.canceled
+            const speed = view.state === 'running' && job.rateBytesPerSecond && job.rateBytesPerSecond !== '0' ? rate(job.rateBytesPerSecond) : undefined
+            const eta = view.state === 'running' && Number(job.remainingMs) > 0 ? duration(job.remainingMs) : undefined
             return (
               <div className="row-block" key={job.id}>
-                <div className="button-row" style={{ justifyContent: 'space-between' }}>
-                  <span className="truncate mono" title={job.restorePath}>
-                    {job.restorePath}
-                  </span>
-                  <Badge tone={job.completed ? 'green' : job.canceled ? undefined : 'blue'}>
-                    {job.completed ? 'Completed' : job.canceled ? 'Stopped' : 'Restoring'}
-                  </Badge>
+                <div className="button-row job-head">
+                  <span className="mono wrap-anywhere">{job.restorePath}</span>
+                  <Badge tone={view.tone}>{view.label}</Badge>
                 </div>
-                {running && <Progress value={value} label="Restore progress" />}
+                {!view.finished && <Progress value={value} label="Restore progress" valueText={value !== undefined ? `${value}%` : undefined} />}
                 <div className="progress-line">
                   <span>
                     {count(job.filesRestored)} of {count(job.numFiles)} files · {bytes(job.bytesRestored)} of {bytes(job.numBytes)}
+                    {speed && ` · ${speed}`}
+                    {eta && ` · about ${eta} remaining`}
                   </span>
                   <span className="button-row">
-                    {running && (
-                      <>
-                        <button className="btn btn-sm" disabled={control.isPending} onClick={() => control.mutate({ id: job.id, action: 'stop' })}>
-                          Stop
-                        </button>
-                        <button
-                          className="btn btn-sm"
-                          disabled={control.isPending || !job.admissible}
-                          onClick={() => control.mutate({ id: job.id, action: 'start' })}
-                        >
-                          Resume
-                        </button>
-                      </>
+                    {view.canStop && (
+                      <button className="btn btn-sm" disabled={control.isPending} onClick={() => control.mutate({ id: job.id, action: 'stop' })}>
+                        Stop
+                      </button>
+                    )}
+                    {view.canResume && (
+                      <button className="btn btn-sm" disabled={control.isPending} onClick={() => control.mutate({ id: job.id, action: 'start' })}>
+                        Resume
+                      </button>
                     )}
                     <button
                       className="btn btn-sm btn-destructive"
                       disabled={control.isPending}
-                      onClick={() => {
-                        if (confirm('Remove this restore from the list? Files already restored stay where they are.'))
+                      onClick={async () => {
+                        if (
+                          await ask({
+                            title: 'Remove this restore from the list?',
+                            message: 'Files already restored stay where they are.',
+                            confirm: 'Remove',
+                            destructive: true,
+                          })
+                        )
                           control.mutate({ id: job.id, action: 'remove' })
                       }}
                     >
@@ -728,7 +792,8 @@ export function Restore() {
                     </button>
                   </span>
                 </div>
-                {!job.admissible && running && (
+                {view.blocked && !view.finished && <span className="row-detail">{view.blocked}</span>}
+                {!job.admissible && !view.finished && (
                   <span className="row-detail">This restore targets a folder outside the mounted restore folders and cannot run.</span>
                 )}
               </div>
@@ -741,13 +806,17 @@ export function Restore() {
         <details className="group disclosure">
           <summary>
             <ChevronRight size={14} />
-            Submitted restores ({operations.data!.length})
+            Request history ({operations.data!.length})
           </summary>
+          <p className="disclosure-lead">
+            Every restore request sent from this page, with what CrashPlan answered. Hide entries you no longer need.
+          </p>
           <ErrorNotice error={operations.error ?? archiveOperations.error} />
+          <div className="list-scroll">
           {operations.data!.map((op) => (
             <Row
               key={op.requestId}
-              title={<span className="mono truncate">{op.restorePath}</span>}
+              title={<span className="mono wrap-anywhere">{op.restorePath}</span>}
               detail={`${dateTime(op.created)} · ${
                 op.state === 'accepted' ? 'Accepted by CrashPlan' : op.state === 'rejected' ? 'Rejected' : 'Outcome unknown'
               }`}
@@ -768,13 +837,11 @@ export function Restore() {
                 )}
             </Row>
           ))}
+          </div>
         </details>
       )}
       {devices.data && sources.length === 0 && (
         <Notice tone="warning">CrashPlan reports no device with a backup.</Notice>
-      )}
-      {base === undefined && when === 'date' && badDate && (
-        <Notice>Choose a date and time to see the files as they were then.</Notice>
       )}
     </Page>
   )

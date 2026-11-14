@@ -6,6 +6,8 @@ const statusKeys = new Set([
   'health',
   'scans',
   'backup-summary',
+  'backup-progress',
+  'devices',
   'alerts',
   'restore-jobs',
   'restore-operations',

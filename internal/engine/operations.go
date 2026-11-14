@@ -58,10 +58,13 @@ func (c *Client) Call(ctx context.Context, name string, in OperationRequest) (js
 			var asked, echo struct {
 				ID json.Number `json:"backupSetId"`
 			}
-			if json.Unmarshal(body, &asked) == nil && asked.ID != "" && json.Unmarshal(decoded, &echo) == nil && echo.ID == asked.ID {
+			if json.Unmarshal(body, &asked) != nil || asked.ID == "" || json.Unmarshal(decoded, &echo) != nil || echo.ID == "" {
+				return probeUnknown
+			}
+			if echo.ID == asked.ID {
 				return probeInStep
 			}
-			return probeUnknown
+			return probeMismatch // another set's answer: never shown
 		})
 	} else {
 		raw, err = c.request(ctx, op.method, path, body, op.auth, false)

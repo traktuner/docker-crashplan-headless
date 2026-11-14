@@ -3,11 +3,27 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
+	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+)
+
+// criticalBuffer and criticalWait bound what one slow result-stream consumer
+// can cost the single reader. A search or count consumer drains continuously,
+// so a full buffer means it stalled. After criticalWait the event is dropped
+// for that subscriber and the bus epoch advances: like a reconnect, it tells
+// search and count consumers that their stream lost continuity, so they fail
+// closed and drain instead of trusting a stream with a gap. Further events
+// for that subscriber are dropped at once until it has caught up. Restore
+// helper launches and SSO finalization are never dropped.
+const (
+	criticalBuffer = 256
+	criticalWait   = 2 * time.Second
 )
 
 // Events is the generation's persistent subscription hub. Connections may
@@ -25,10 +41,12 @@ type Events struct {
 	stop             chan struct{}
 }
 type eventSubscription struct {
-	kind     string
-	ch       chan json.RawMessage
-	stop     chan struct{}
-	critical bool
+	kind       string
+	ch         chan json.RawMessage
+	stop       chan struct{}
+	critical   bool
+	droppable  bool
+	overflowed atomic.Bool
 }
 
 func (e *Events) Epoch() uint64         { e.mu.Lock(); defer e.mu.Unlock(); return e.epoch }
@@ -186,7 +204,13 @@ func (e *Events) Subscribe(kind string) (<-chan json.RawMessage, func(), error) 
 	if e.closed {
 		return nil, nil, ErrUnavailable
 	}
-	sub := &eventSubscription{kind: kind, ch: make(chan json.RawMessage, 32), stop: make(chan struct{}), critical: kind == "LaunchRestoreToolMessage" || kind == "SsoAuthFinalizeMessage" || kind == "SearchFileVersionsResultMessage" || kind == "GetFileContentsResultMessage"}
+	critical := kind == "LaunchRestoreToolMessage" || kind == "SsoAuthFinalizeMessage" || kind == "SearchFileVersionsResultMessage" || kind == "GetFileContentsResultMessage"
+	size := 32
+	if critical {
+		size = criticalBuffer
+	}
+	droppable := kind == "SearchFileVersionsResultMessage" || kind == "GetFileContentsResultMessage"
+	sub := &eventSubscription{kind: kind, ch: make(chan json.RawMessage, size), stop: make(chan struct{}), critical: critical, droppable: droppable}
 	e.subs[sub] = struct{}{}
 	var once sync.Once
 	return sub.ch, func() {
@@ -229,11 +253,40 @@ func (e *Events) read(ctx context.Context, conn *websocket.Conn, cancel context.
 			}
 			copy := append(json.RawMessage(nil), raw...)
 			if sub.critical {
+				if sub.overflowed.Load() {
+					if len(sub.ch) > cap(sub.ch)/2 {
+						continue // still behind: keep dropping without waiting
+					}
+					sub.overflowed.Store(false)
+				}
+				select {
+				case sub.ch <- copy:
+					continue
+				default:
+				}
+				var expired <-chan time.Time
+				var timer *time.Timer
+				if sub.droppable {
+					timer = time.NewTimer(criticalWait)
+					expired = timer.C
+				}
 				select {
 				case sub.ch <- copy:
 				case <-sub.stop:
+				case <-expired:
+					sub.overflowed.Store(true)
+					e.mu.Lock()
+					e.epoch++
+					e.mu.Unlock()
+					slog.Warn("native_event_dropped", "kind", sub.kind)
 				case <-ctx.Done():
+					if timer != nil {
+						timer.Stop()
+					}
 					return
+				}
+				if timer != nil {
+					timer.Stop()
 				}
 			} else {
 				select {

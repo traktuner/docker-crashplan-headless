@@ -13,8 +13,11 @@ import {
   Section,
   Segmented,
   Spinner,
+  TechnicalDetails,
 } from '../../shared/components'
+import { bytes } from '../../shared/format'
 import { newRequestId } from '../../shared/requestId'
+import { outcome } from '../destinations/outcome'
 import { ReplacementWorkflow } from './ReplacementWorkflow'
 import './account.css'
 
@@ -43,7 +46,7 @@ function DeviceRow({
 }: {
   device: PolicyDevice
   kind: Kind
-  extra?: { status?: string; id?: boolean }
+  extra?: { status?: string; ordinal?: number }
   editable: boolean
   maintain: boolean
   removable: boolean
@@ -66,12 +69,7 @@ function DeviceRow({
     <>
       {label}
       {extra?.status && ' · ' + extra.status}
-      {extra?.id && (
-        <>
-          {' · '}
-          <span className="account-id">ID {device.id}</span>
-        </>
-      )}
+      {extra?.ordinal && ` · No. ${extra.ordinal}`}
     </>
   )
   if (mode === 'rename')
@@ -80,7 +78,7 @@ function DeviceRow({
         <form
           noValidate
           className="account-inline"
-          aria-label={'Rename ' + (device.name || device.id)}
+          aria-label={'Rename ' + (device.name || 'device')}
           onSubmit={(e) => {
             e.preventDefault()
             if (!changed || blocked) return
@@ -140,9 +138,7 @@ function DeviceRow({
           <Icon size={16} aria-hidden="true" />
         </span>
         <div className="row-main">
-          <div className="row-title" title={'Device ID ' + device.id}>
-            {device.name || 'Unnamed device'}
-          </div>
+          <div className="row-title">{device.name || 'Unnamed device'}</div>
           <div className="row-detail">{detail}</div>
           {maintain && offline && (
             <div className="row-detail">
@@ -308,19 +304,33 @@ export function DeviceNames() {
   for (const d of visible) counts.set(key(d.name), (counts.get(key(d.name)) ?? 0) + 1)
   // Same-named entries get what tells them apart: whether a destination is
   // in use, and the device ID as a last resort.
+  const seen = new Map<string, number>()
   function extra(d: PolicyDevice, kind: Kind) {
-    if ((counts.get(key(d.name)) ?? 0) < 2) return undefined
-    let status: string | undefined
-    if (kind === 'local' || kind === 'destination') {
-      const known = catalog.data?.find((c) => String(c.id) === String(d.id))
-      status =
-        known && !known.target && !known.availableTarget
-          ? 'Not in use'
-          : used(d.id)
-            ? 'Used by a backup set'
-            : 'Not used by a backup set'
+    const known = catalog.data?.find((c) => String(c.id) === String(d.id))
+    const parts: string[] = []
+    if (kind !== 'self' && known?.connected !== undefined)
+      parts.push(known.connected ? 'Connected' : 'Not connected')
+    if (known?.usedBytes)
+      parts.push(
+        known.quotaBytes && known.quotaBytes !== '0'
+          ? `${bytes(known.usedBytes)} of ${bytes(known.quotaBytes)} used`
+          : `${bytes(known.usedBytes)} used`,
+      )
+    let ordinal: number | undefined
+    if ((counts.get(key(d.name)) ?? 0) >= 2) {
+      if (kind === 'local' || kind === 'destination')
+        parts.unshift(
+          known && !known.target && !known.availableTarget
+            ? 'Not in use'
+            : used(d.id)
+              ? 'Used by a backup set'
+              : 'Not used by a backup set',
+        )
+      // Same name and nothing else to tell them apart: number them.
+      ordinal = (seen.get(key(d.name)) ?? 0) + 1
+      seen.set(key(d.name), ordinal)
     }
-    return { status, id: true }
+    return parts.length || ordinal ? { status: parts.join(' · ') || undefined, ordinal } : undefined
   }
   return (
     <Section
@@ -373,14 +383,14 @@ export function DeviceNames() {
               <Spinner /> Sending the change to CrashPlan…
             </div>
           ) : operation.data ? (
-            <Notice tone="success">
-              CrashPlan reported: {operation.data.state}.
+            <Notice tone={outcome(operation.data.state).tone}>
+              {outcome(operation.data.state).title}
             </Notice>
           ) : null}
-          <div className="row-detail">
-            Request <span className="account-id">{attempt.requestId}</span>.
-            Its saved outcome prevents automatic repetition.
-          </div>
+          <TechnicalDetails>
+            Request <span className="account-id">{attempt.requestId}</span>. Its
+            saved outcome prevents automatic repetition.
+          </TechnicalDetails>
           {!operation.isPending && (
             <div className="button-row">
               <button
@@ -407,7 +417,7 @@ export function AccountDevices() {
     queryFn: () => api.migration(),
   })
   const [selected, setSelected] = useState('')
-  const [confirmId, setConfirmId] = useState('')
+  const [confirmName, setConfirmName] = useState('')
   const [showCandidates, setShowCandidates] = useState(false)
   const [mode, setMode] = useState<'inherit' | 'replace'>('inherit')
   const candidates = useQuery({
@@ -451,12 +461,17 @@ export function AccountDevices() {
     (mode === 'inherit' ? candidates.isPending : devices.isPending)
   function reset() {
     setSelected('')
-    setConfirmId('')
+    setConfirmName('')
     inherit.reset()
     select.reset()
   }
   const busy = select.isPending || inherit.isPending
-  const mismatch = !!selected && selected !== confirmId
+  // The person confirms with the device name; the request itself still
+  // carries the device identifier that the service checks.
+  const chosen = choices?.find((d) => d.computerGuid === selected)
+  const chosenName = chosen?.name?.trim() || 'Unnamed device'
+  const mismatch =
+    !!selected && confirmName.trim().toLowerCase() !== chosenName.toLowerCase()
 
   const body = (
     <>
@@ -526,7 +541,7 @@ export function AccountDevices() {
                   value={selected}
                   onChange={(e) => {
                     setSelected(e.target.value)
-                    setConfirmId('')
+                    setConfirmName('')
                   }}
                 >
                   <option value="">
@@ -547,16 +562,18 @@ export function AccountDevices() {
               <>
                 <Notice tone="warning">
                   This changes the backup identity of this device and can sign
-                  out the previous installation. To confirm, type the device ID{' '}
-                  <code>{selected}</code>.
+                  out the previous installation. To confirm, type the device
+                  name <strong>{chosenName}</strong>.
                 </Notice>
-                <Field label="Device ID">
+                <Field label="Device name">
                   <input
                     className="input"
-                    value={confirmId}
+                    value={confirmName}
                     autoComplete="off"
+                    autoCapitalize="none"
+                    autoCorrect="off"
                     spellCheck={false}
-                    onChange={(e) => setConfirmId(e.target.value)}
+                    onChange={(e) => setConfirmName(e.target.value)}
                   />
                 </Field>
               </>

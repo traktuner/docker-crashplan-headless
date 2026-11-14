@@ -252,7 +252,7 @@ func (c *Client) ExecuteLocalArchive(ctx context.Context, action, path, source, 
 	}
 	payload, _ := json.Marshal(body)
 	raw, err := c.legacyRequest(ctx, class, method, "/v0/"+endpoint, payload, true, true)
-	raw, err = restoreResponse(raw, err, class)
+	raw, err = actionResponse(raw, err, class)
 	if err != nil {
 		return LocalArchiveResult{}, err
 	}

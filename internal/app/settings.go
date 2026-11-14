@@ -47,7 +47,7 @@ func (s *Server) settingsRoutes(handle func(string, string, bool, handler)) {
 		return nil
 	})
 	handle("GET /api/v1/devices", "devices", false, func(w http.ResponseWriter, r *http.Request, _ auth.Session) error {
-		devices, err := s.native.Devices(r.Context())
+		devices, err := s.native.DeviceDetails(r.Context())
 		if err != nil {
 			return err
 		}

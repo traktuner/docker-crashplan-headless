@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, Search } from 'lucide-react'
 import { api } from '../../shared/api'
-import type { DestinationProgress } from '../../shared/api'
+import type { Alert, BackupSet, Device, DestinationProgress, SetProgress } from '../../shared/api'
 import {
   Badge,
   ErrorNotice,
@@ -13,98 +13,199 @@ import {
   Section,
   Segmented,
 } from '../../shared/components'
-import { StatusCard, useBackupStatus } from '../../shared/StatusCard'
-import { completion } from '../../shared/backupStatus'
-import {
-  bytes,
-  count,
-  dateTime,
-  percent,
-  rate,
-  relative,
-  words,
-} from '../../shared/format'
-import { eventLevel, isBackupEvent, visibleAlert } from './events'
+import { BackupActions } from '../../shared/BackupActions'
+import { CurrentFile, StatusCard, useBackupStatus } from '../../shared/StatusCard'
+import { pairStatus, progressText, selectionBytes, selectionFiles, shortLabel } from '../../shared/backupStatus'
+import type { BackupStatus } from '../../shared/backupStatus'
+import { bytes, count, dateTime, percent, rate, relative, words } from '../../shared/format'
+import { eventKeys, eventLevel, isBackupEvent, sortAlerts, visibleAlert } from './events'
 
-const pauseOptions = [
-  { value: '15', label: '15 min' },
-  { value: '60', label: '1 hour' },
-  { value: '240', label: '4 hours' },
-  { value: '1440', label: '1 day' },
-]
-
-function DestinationDetails({
-  destination,
-  setName,
-  syncing,
-}: {
-  destination: DestinationProgress
-  setName: (id: string) => string
-  syncing: boolean
-}) {
+const toneBadge: Record<BackupStatus['tone'], 'blue' | 'green' | 'orange' | 'red' | undefined> = {
+  active: 'blue',
+  good: 'green',
+  warn: 'orange',
+  bad: 'red',
+  idle: undefined,
+}
+/** One backup set at one destination. */
+function PairDetails({ d, s }: { d: DestinationProgress; s: SetProgress }) {
+  const state = pairStatus(d, s)
+  const share = percent(s.percent)
+  const files = selectionFiles(s)
   return (
-    <Section
-      title={destination.name || 'Destination'}
-      description={
-        destination.validating
-          ? 'Synchronizing with the destination'
-          : destination.backingUp
-            ? 'Backing up · ' + rate(destination.completedRateBytesPerSecond)
-            : undefined
-      }
-      footer={
-        syncing
-          ? 'Selected and remaining amounts come from before the synchronization and are updated when it finishes.'
-          : undefined
-      }
-    >
-      {destination.sets.length === 0 && (
-        <Row title="No backup set uses this destination" />
+    <div className="pair">
+      <Row
+        title={<strong>{d.name || 'Destination'}</strong>}
+        detail={state.kind === 'complete' ? undefined : state.detail}
+        value={
+          <span className="pair-state">
+            <Badge tone={toneBadge[state.tone]}>{shortLabel[state.kind]}</Badge>
+            {share && state.kind !== 'complete' && <span>{share}</span>}
+          </span>
+        }
+      />
+      <Row
+        title="Selected"
+        value={
+          selectionBytes(s) > 0n
+            ? `${count(files.toString())} files · ${bytes(selectionBytes(s).toString())}`
+            : 'Not scanned yet'
+        }
+      />
+      <Row title="Remaining" value={progressText(s)} />
+      <Row
+        title="Last backup"
+        value={Number(s.lastBackup) > 0 ? <span title={dateTime(s.lastBackup)}>{relative(s.lastBackup)}</span> : 'Not reported yet'}
+      />
+      {Number(s.nextBackup) > 0 && <Row title="Next backup" value={dateTime(s.nextBackup)} />}
+      {s.sendingPath && (
+        <div className="row">
+          <CurrentFile path={s.sendingPath} />
+        </div>
       )}
-      {destination.sets.map((set) => {
-        const done = completion(set)
+      {(state.actions.run || state.actions.pause || state.actions.resume) && (
+        <div className="row">
+          <BackupActions
+            actions={state.actions}
+            backupSetId={s.backupSetId}
+            destinationId={d.targetId}
+            destinationName={d.name}
+            systemPaused={state.kind === 'system-paused'}
+            small
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function connection(d: DestinationProgress) {
+  if (d.connected === true) return { label: 'Connected', tone: 'green' as const }
+  if (d.connected === false)
+    return d.disconnectCode && d.disconnectCode !== 'DISCONNECTED'
+      ? { label: 'Disconnected', tone: 'red' as const }
+      : { label: 'Waiting for connection', tone: 'orange' as const }
+  return undefined
+}
+
+function DestinationRow({ d, device }: { d: DestinationProgress; device?: Device }) {
+  const client = useQueryClient()
+  const reconnect = useMutation({
+    mutationFn: () => api.reconnectDestination(d.targetId),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: ['backup-progress'] })
+      void client.invalidateQueries({ queryKey: ['devices'] })
+    },
+  })
+  const state = connection(d)
+  const activity = d.validating
+    ? 'Synchronizing'
+    : d.maintenance
+      ? 'Archive maintenance'
+      : d.backingUp
+        ? 'Backing up · ' + rate(d.completedRateBytesPerSecond)
+        : undefined
+  const used = device?.usedBytes
+  const quota = device?.quotaBytes
+  const usage = used ? (quota && quota !== '0' ? `${bytes(used)} of ${bytes(quota)} used` : `${bytes(used)} used`) : undefined
+  return (
+    <>
+      <Row
+        title={d.name || 'Destination'}
+        detail={[activity, usage, device?.location].filter(Boolean).join(' · ') || undefined}
+        value={state && <Badge tone={state.tone}>{state.label}</Badge>}
+      >
+        {d.connected === false && (
+          <button className="btn btn-sm" disabled={reconnect.isPending} onClick={() => reconnect.mutate()}>
+            {reconnect.isPending ? 'Reconnecting…' : 'Reconnect'}
+          </button>
+        )}
+      </Row>
+      {d.error && (
+        <div className="row-block">
+          <Notice tone="warning">CrashPlan did not report the state of this destination. It is asked again shortly.</Notice>
+        </div>
+      )}
+      {reconnect.error && (
+        <div className="row-block">
+          <ErrorNotice error={reconnect.error} />
+        </div>
+      )}
+      {reconnect.isSuccess && (
+        <div className="row-block">
+          <span className="row-detail" role="status">Reconnect requested.</span>
+        </div>
+      )}
+    </>
+  )
+}
+
+const alertActions = { resume: 'Resume backup', retry: 'Try again', reconnect: 'Reconnect' } as const
+
+function Alerts({ alerts, progress }: { alerts: Alert[]; progress: DestinationProgress[] | undefined }) {
+  const client = useQueryClient()
+  const dismiss = useMutation({
+    mutationFn: (id: string) => api.dismissAlert(id),
+    onSettled: () => client.invalidateQueries({ queryKey: ['alerts'] }),
+  })
+  const offline = (progress ?? []).filter((d) => d.connected === false)
+  const act = useMutation({
+    mutationFn: async (action: NonNullable<Alert['action']>) => {
+      if (action === 'resume') await api.backupControl('resume', {})
+      else if (action === 'retry') await api.runBackup({})
+      else for (const d of offline) await api.reconnectDestination(d.targetId)
+    },
+    onSettled: () => {
+      for (const key of ['alerts', 'backup-progress', 'backup-summary'])
+        void client.invalidateQueries({ queryKey: [key] })
+    },
+  })
+  return (
+    <Section title="Alerts">
+      <ErrorNotice error={dismiss.error ?? act.error} />
+      {alerts.map((alert) => {
+        const action = alert.action && (alert.action !== 'reconnect' || offline.length > 0) ? alert.action : undefined
         return (
-          <div key={set.backupSetId}>
-            <Row
-              title={<strong>{setName(set.backupSetId)}</strong>}
-              value={
-                set.scanning ? (
-                  <Badge tone="blue">Scanning</Badge>
-                ) : done !== undefined ? (
-                  percent(done) + ' backed up'
-                ) : undefined
-              }
-            />
-            <Row title="Selected" value={`${count(set.filesScanned)} files · ${bytes(set.bytesScanned)}`} />
-            <Row title="To do" value={`${count(set.remainingFiles)} files · ${bytes(set.remainingBytes)}`} />
-            <Row
-              title="Last backup"
-              value={
-                Number(set.lastBackup) > 0
-                  ? `${relative(set.lastBackup)} (${dateTime(set.lastBackup)})`
-                  : 'Not reported yet'
-              }
-            />
-            {Number(set.nextBackup) > 0 && (
-              <Row title="Next backup" value={dateTime(set.nextBackup)} />
+          <Row
+            key={alert.id}
+            title={alert.title || words(alert.name)}
+            detail={alert.message && alert.message !== alert.name ? alert.message : undefined}
+          >
+            {action && (
+              <button className="btn btn-sm btn-primary" disabled={act.isPending} onClick={() => act.mutate(action)}>
+                {alertActions[action]}
+              </button>
             )}
-            {set.sendingPath && (
-              <Row title="Current file" detail={set.sendingPath} />
+            {alert.closable !== false && (
+              <button className="btn btn-sm" disabled={dismiss.isPending} onClick={() => dismiss.mutate(alert.id)}>
+                Dismiss
+              </button>
             )}
-          </div>
+          </Row>
         )
       })}
     </Section>
   )
 }
 
+function setLabel(sets: BackupSet[] | undefined, id: string) {
+  const name = sets?.find((s) => String(s.id) === id)?.fields.find((f) => f.name === 'name')?.value
+  return typeof name === 'string' && name.trim() ? name : 'Backup set'
+}
+
+const firstLoad = 500
+
 export function Activity({ signedIn }: { signedIn: boolean | undefined }) {
-  const client = useQueryClient()
   const { status, progress } = useBackupStatus(signedIn)
   const ready = signedIn === true
   const sets = useQuery({
     queryKey: ['set-details'],
     queryFn: () => api.backupSetDetails(),
+    enabled: ready,
+  })
+  const devices = useQuery({
+    queryKey: ['devices'],
+    queryFn: () => api.devices(),
     enabled: ready,
   })
   const alerts = useQuery({
@@ -113,126 +214,71 @@ export function Activity({ signedIn }: { signedIn: boolean | undefined }) {
     refetchInterval: 30_000,
     enabled: ready,
   })
+  const [limit, setLimit] = useState(firstLoad)
   const history = useQuery({
-    queryKey: ['history'],
-    queryFn: () => api.history(),
+    queryKey: ['history', limit],
+    queryFn: () => api.history(limit),
     refetchInterval: 30_000,
     enabled: ready,
-  })
-  const [scope, setScope] = useState('')
-  const [minutes, setMinutes] = useState('60')
-  const control = useMutation({
-    mutationFn: (action: 'pause' | 'resume') =>
-      api.backupControl(action, {
-        ...(scope ? { backupSetId: scope } : {}),
-        ...(action === 'pause' ? { durationMinutes: minutes } : {}),
-      }),
-    onSettled: () => {
-      void client.invalidateQueries({ queryKey: ['backup-progress'] })
-      void client.invalidateQueries({ queryKey: ['backup-summary'] })
-    },
-  })
-  const dismiss = useMutation({
-    mutationFn: (id: string) => api.dismissAlert(id),
-    onSettled: () => client.invalidateQueries({ queryKey: ['alerts'] }),
+    placeholderData: keepPreviousData,
   })
   const [filter, setFilter] = useState<'all' | 'backup' | 'problems'>('all')
   const [query, setQuery] = useState('')
   const [shown, setShown] = useState(100)
+  const loaded = history.data ?? []
   const events = useMemo(() => {
     const term = query.trim().toLowerCase()
-    return (history.data ?? [])
+    const keys = eventKeys(loaded)
+    return loaded
+      .map((entry, i) => ({ entry, key: keys[i]! }))
       .toReversed()
-      .filter((e) =>
-        filter === 'backup'
-          ? isBackupEvent(e.message)
-          : filter === 'problems'
-            ? e.level !== 'I'
-            : true,
+      .filter(({ entry: e }) =>
+        filter === 'backup' ? isBackupEvent(e.message) : filter === 'problems' ? e.level !== 'I' : true,
       )
-      .filter((e) => !term || e.message.toLowerCase().includes(term))
-  }, [history.data, filter, query])
-  const setName = (id: string) =>
-    String(
-      sets.data
-        ?.find((s) => String(s.id) === id)
-        ?.fields.find((f) => f.name === 'name')?.value ?? 'Backup set ' + id,
-    )
-  const visibleAlerts = alerts.data?.filter((a) => visibleAlert(a.name)) ?? []
+      .filter(({ entry: e }) => !term || e.message.toLowerCase().includes(term))
+  }, [loaded, filter, query])
+  // The server returns at most `limit` entries; a full page means older ones exist.
+  const moreOnServer = loaded.length === limit && limit < 50_000
+  const visibleAlerts = sortAlerts(alerts.data?.filter((a) => visibleAlert(a.name)) ?? [])
+  const destinations = progress.data ?? []
+  const setIds = [
+    ...(sets.data?.map((s) => String(s.id)) ?? []),
+    ...destinations.flatMap((d) => d.sets.map((s) => s.backupSetId)),
+  ].filter((id, i, all) => all.indexOf(id) === i)
 
   return (
     <Page title="Activity" subtitle="Live progress, alerts and the CrashPlan event log.">
-      <StatusCard status={status} />
+      <StatusCard status={status} controls={ready} />
       <ErrorNotice error={progress.error} />
 
-      {progress.data?.map((destination) => (
-        <DestinationDetails
-          key={destination.targetId}
-          destination={destination}
-          setName={setName}
-          syncing={destination.validating}
-        />
-      ))}
+      {visibleAlerts.length > 0 && <Alerts alerts={visibleAlerts} progress={progress.data} />}
+      {alerts.error && <ErrorNotice error={alerts.error} />}
 
-      {visibleAlerts.length > 0 && (
-        <Section title="Alerts">
-          <ErrorNotice error={alerts.error ?? dismiss.error} />
-          {visibleAlerts.map((alert) => (
-            <Row
-              key={alert.id}
-              title={alert.title || words(alert.name)}
-              detail={alert.message && alert.message !== alert.name ? alert.message : undefined}
-            >
-              <button
-                className="btn btn-sm"
-                disabled={dismiss.isPending}
-                onClick={() => dismiss.mutate(alert.id)}
-              >
-                Dismiss
-              </button>
-            </Row>
+      {setIds.map((id) => {
+        const pairs = destinations.flatMap((d) => (d.error ? [] : d.sets.filter((s) => s.backupSetId === id).map((s) => ({ d, s }))))
+        if (pairs.length === 0) return null
+        return (
+          <Section
+            key={id}
+            title={setLabel(sets.data, id)}
+            footer={
+              pairs.some(({ d }) => d.validating)
+                ? 'Selected and remaining amounts come from before the synchronization and are updated when it finishes.'
+                : undefined
+            }
+          >
+            {pairs.map(({ d, s }) => (
+              <PairDetails key={d.targetId} d={d} s={s} />
+            ))}
+          </Section>
+        )
+      })}
+
+      {destinations.length > 0 && (
+        <Section title="Destinations">
+          {destinations.map((d) => (
+            <DestinationRow key={d.targetId} d={d} device={devices.data?.find((x) => String(x.id) === String(d.targetId))} />
           ))}
-        </Section>
-      )}
-
-      {ready && (
-        <Section
-          title="Pause backup"
-          description="Backup resumes automatically after the chosen time."
-        >
-          {(sets.data?.length ?? 0) > 1 && (
-            <Row title="Backup set">
-              <select className="select" aria-label="Backup set" value={scope} onChange={(e) => setScope(e.target.value)}>
-                <option value="">All backup sets</option>
-                {sets.data?.map((item) => (
-                  <option key={String(item.id)} value={String(item.id)}>
-                    {setName(String(item.id))}
-                  </option>
-                ))}
-              </select>
-            </Row>
-          )}
-          <Row title="Pause for">
-            <Segmented label="Pause duration" value={minutes} options={pauseOptions} onChange={setMinutes} />
-          </Row>
-          <div className="row">
-            <div className="row-main">
-              {control.isSuccess && (
-                <span className="row-detail">
-                  {control.variables === 'pause' ? 'Backup paused.' : 'Backup resumed.'}
-                </span>
-              )}
-              <ErrorNotice error={control.error} />
-            </div>
-            <div className="button-row">
-              <button className="btn" disabled={control.isPending} onClick={() => control.mutate('resume')}>
-                Resume now
-              </button>
-              <button className="btn btn-primary" disabled={control.isPending} onClick={() => control.mutate('pause')}>
-                Pause
-              </button>
-            </div>
-          </div>
         </Section>
       )}
 
@@ -256,11 +302,15 @@ export function Activity({ signedIn }: { signedIn: boolean | undefined }) {
             />
           }
         >
-          <div className="row">
-            <Search size={15} className="row-chevron" />
+          <div className="row search-row">
+            <Search size={15} className="row-chevron" aria-hidden="true" />
             <input
-              className="input"
-              style={{ border: 0, boxShadow: 'none', padding: 0, minHeight: 24 }}
+              className="input input-bare"
+              type="search"
+              enterKeyHint="search"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               placeholder="Search events"
               aria-label="Search events"
               value={query}
@@ -270,33 +320,43 @@ export function Activity({ signedIn }: { signedIn: boolean | undefined }) {
           {history.isPending ? (
             <Loading />
           ) : (
-            <div className="list-scroll" style={{ borderTop: '1px solid var(--separator)' }}>
+            <div className="list-scroll log-list">
               <ErrorNotice error={history.error} />
-              {events.length === 0 && (
-                <div className="row row-detail">No events match.</div>
-              )}
-              {events.slice(0, shown).map((entry, index) => {
+              {events.length === 0 && <div className="row row-detail">No events match.</div>}
+              {events.slice(0, shown).map(({ entry, key }) => {
                 const level = eventLevel(entry.level)
                 return (
-                  <details className="log-row" key={entry.timestamp + ':' + index}>
+                  <details className="log-row" key={key}>
                     <summary>
-                      <time dateTime={new Date(Number(entry.timestamp)).toISOString()}>
-                        {dateTime(entry.timestamp)}
-                      </time>
-                      <span>
+                      <time dateTime={new Date(Number(entry.timestamp)).toISOString()}>{dateTime(entry.timestamp)}</time>
+                      <span className="log-level">
                         <span className={'badge ' + (level.tone ?? '')}>{level.label}</span>
                       </span>
-                      <span className="truncate">{entry.message}</span>
-                      <ChevronRight size={14} className="chev" />
+                      <span className="truncate log-msg">{entry.message}</span>
+                      <ChevronRight size={14} className="chev" aria-hidden="true" />
                     </summary>
                     <div className="log-body">{entry.message}</div>
                   </details>
                 )
               })}
-              {events.length > shown && (
+              {(events.length > shown || moreOnServer) && (
                 <div className="row">
-                  <button className="btn btn-plain btn-sm" onClick={() => setShown(shown + 200)}>
-                    Show older events ({count(events.length - shown)} more)
+                  <button
+                    className="btn btn-plain btn-sm"
+                    disabled={history.isFetching}
+                    onClick={() => {
+                      if (events.length > shown) setShown(shown + 200)
+                      else {
+                        setLimit((n) => Math.min(50_000, n * 4))
+                        setShown(shown + 200)
+                      }
+                    }}
+                  >
+                    {history.isFetching && events.length <= shown
+                      ? 'Loading older events…'
+                      : events.length > shown
+                        ? `Show older events (${count(events.length - shown)} more loaded)`
+                        : 'Show older events'}
                   </button>
                 </div>
               )}
@@ -304,9 +364,7 @@ export function Activity({ signedIn }: { signedIn: boolean | undefined }) {
           )}
         </Section>
       )}
-      {signedIn === false && (
-        <Notice tone="warning">Sign in to CrashPlan to see backup activity.</Notice>
-      )}
+      {signedIn === false && <Notice tone="warning">Sign in to CrashPlan to see backup activity.</Notice>}
     </Page>
   )
 }

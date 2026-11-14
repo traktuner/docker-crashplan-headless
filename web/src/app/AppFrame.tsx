@@ -48,6 +48,35 @@ export function AppFrame({
     signedIn === false && id !== 'account' && id !== 'system'
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
+  const [active, setActive] = useState(0)
+  // Like an iOS large title: the bar shows the page name once its heading
+  // has scrolled out of view.
+  const [titleShown, setTitleShown] = useState(false)
+  useEffect(() => {
+    setTitleShown(false)
+    let observer: IntersectionObserver | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let tries = 0
+    // Pages load lazily, so the heading can appear a moment later.
+    const attach = () => {
+      const heading = document.querySelector('#main-content h1')
+      if (!heading) {
+        if (tries++ < 40) timer = setTimeout(attach, 150)
+        return
+      }
+      if (typeof IntersectionObserver === 'undefined') return
+      observer = new IntersectionObserver(
+        ([entry]) => setTitleShown(!entry!.isIntersecting),
+        { rootMargin: '-60px 0px 0px 0px' },
+      )
+      observer.observe(heading)
+    }
+    attach()
+    return () => {
+      if (timer) clearTimeout(timer)
+      observer?.disconnect()
+    }
+  }, [page])
   const command = useRef<HTMLDialogElement>(null)
   const sidebar = useRef<HTMLElement>(null)
   const menu = useRef<HTMLButtonElement>(null)
@@ -93,9 +122,12 @@ export function AppFrame({
     setOpen(false)
     command.current?.close()
     setSearch('')
+    setActive(0)
     navigate(next)
   }
   const current = pages.find((p) => p.id === page)!
+  const results = findPages(search).filter((p) => !locked(p.id))
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
   return (
     <div className="shell">
       <a className="skip-link" href="#main-content">
@@ -173,6 +205,10 @@ export function AppFrame({
           </p>
         )}
         <div className="sidebar-bottom">
+          <div className="mobile-only drawer-theme">
+            <span className="nav-label">Appearance</span>
+            <ThemeSwitch />
+          </div>
           {signedIn !== undefined && (
             <button className="account-chip" onClick={() => go('account')}>
               <span className={'dot ' + (signedIn ? 'green' : 'orange')} />
@@ -200,7 +236,9 @@ export function AppFrame({
           >
             <Menu size={19} />
           </button>
-          <span className="topbar-title">{current.label}</span>
+          <span className={'topbar-title' + (titleShown ? ' is-shown' : '')} aria-hidden={!titleShown}>
+            {current.label}
+          </span>
           <div className="topbar-actions">
             <button
               className="search-trigger desktop-only"
@@ -209,9 +247,11 @@ export function AppFrame({
             >
               <Search size={14} />
               Go to page
-              <kbd>⌘K</kbd>
+              <kbd>{mac ? '⌘K' : 'Ctrl K'}</kbd>
             </button>
-            <ThemeSwitch />
+            <span className="desktop-only">
+              <ThemeSwitch />
+            </span>
           </div>
         </header>
         <main className="workspace" id="main-content" tabIndex={-1}>
@@ -232,19 +272,45 @@ export function AppFrame({
           <input
             aria-label="Page name"
             placeholder="Go to page"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="command-results"
+            aria-activedescendant={results[active] ? 'command-' + results[active].id : undefined}
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            enterKeyHint="go"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value)
+              setActive(0)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault()
+                const step = e.key === 'ArrowDown' ? 1 : -1
+                setActive((i) => (results.length ? (i + step + results.length) % results.length : 0))
+              } else if (e.key === 'Enter') {
+                e.preventDefault()
+                const target = results[active] ?? results[0]
+                if (target) go(target.id)
+              }
+            }}
             autoFocus
           />
         </div>
-        <div className="command-results">
-          {findPages(search).map((item) => {
+        <div className="command-results" id="command-results" role="listbox" aria-label="Pages">
+          {results.map((item, index) => {
             const Icon = icons[item.id]
             return (
               <button
                 key={item.id}
-                className="nav-item"
-                disabled={locked(item.id)}
+                id={'command-' + item.id}
+                role="option"
+                aria-selected={index === active}
+                tabIndex={-1}
+                className={'nav-item' + (index === active ? ' is-active' : '')}
+                onMouseEnter={() => setActive(index)}
                 onClick={() => go(item.id)}
               >
                 <Icon size={16} />
@@ -252,7 +318,7 @@ export function AppFrame({
               </button>
             )
           })}
-          {findPages(search).length === 0 && (
+          {results.length === 0 && (
             <p className="row-detail" style={{ padding: 12 }}>
               No page matches.
             </p>

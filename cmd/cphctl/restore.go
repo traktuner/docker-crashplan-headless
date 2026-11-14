@@ -33,6 +33,16 @@ func restoreCommand(args []string, diagnostic io.Writer) (method, path string, b
 			}
 		}
 		return "POST", "restore/operations/archive", map[string]any{"requestIds": args[3:], "confirm": "ARCHIVE"}, nil
+	case "acknowledge":
+		if len(args) != 2 || !regexp.MustCompile(`^[a-f0-9]{32}$`).MatchString(args[1]) {
+			return "", "", nil, errRestoreCommand
+		}
+		return "POST", "restore/operations/" + args[1] + "/acknowledge", struct{}{}, nil
+	case "clear-completed":
+		if len(args) != 1 {
+			return "", "", nil, errRestoreCommand
+		}
+		return "POST", "restore/jobs/clear-completed", struct{}{}, nil
 	case "roots", "jobs", "operations", "helper":
 		if len(args) != 1 {
 			return "", "", nil, errRestoreCommand

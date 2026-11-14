@@ -16,6 +16,7 @@ import {
   Row,
   Section,
   Segmented,
+  useConfirm,
 } from '../../shared/components'
 import {
   CustomKeyMaterial,
@@ -122,7 +123,7 @@ function Unlock() {
                 </option>
                 {sources.map((d) => (
                   <option key={d.id} value={d.id}>
-                    {d.name || d.id}
+                    {d.name || 'Unnamed computer'}
                   </option>
                 ))}
               </select>
@@ -454,7 +455,10 @@ function Upgrade({ current }: { current: SecurityType }) {
   // An archive password can only be added on top of the account password.
   const type: SecurityUpgrade['type'] =
     current === 'AccountPassword' ? input.type : 'CustomKey'
-  const phrase = 'UPGRADE TO ' + type
+  // People type a readable phrase; the request carries the exact phrase the
+  // service checks ("UPGRADE TO PrivatePassword" / "UPGRADE TO CustomKey").
+  const phrase = type === 'PrivatePassword' ? 'UPGRADE TO ARCHIVE PASSWORD' : 'UPGRADE TO CUSTOM KEY'
+  const servicePhrase = 'UPGRADE TO ' + type
   const upgrade = useMutation({
     mutationFn: (payload: SecurityUpgrade) => api.upgradeSecurity(payload),
     onSettled: () => {
@@ -473,7 +477,7 @@ function Upgrade({ current }: { current: SecurityType }) {
       : !hasMaterial(input)
         ? 'Enter or generate the custom key.'
         : undefined
-  const confirmed = input.confirm === phrase
+  const confirmed = input.confirm.trim() === phrase
   return (
     <Section
       title="Upgrade protection"
@@ -488,7 +492,7 @@ function Upgrade({ current }: { current: SecurityType }) {
             e.preventDefault()
             setSubmitted(true)
             if (secretError || !confirmed) return
-            upgrade.mutate({ ...input, type })
+            upgrade.mutate({ ...input, type, confirm: servicePhrase })
           }}
         >
           <Notice tone="warning">
@@ -569,6 +573,8 @@ function Upgrade({ current }: { current: SecurityType }) {
             <input
               className="input"
               autoComplete="off"
+              autoCapitalize="characters"
+              autoCorrect="off"
               spellCheck={false}
               value={input.confirm}
               disabled={upgrade.isPending}
@@ -606,11 +612,13 @@ export function Security() {
   })
   const type = state.data?.type
   const info = type ? protection[type] : undefined
+  const [confirmDialog, ask] = useConfirm()
   return (
     <Page
       title="Security"
       subtitle="How your backups are encrypted, and how to unlock them."
     >
+      {confirmDialog}
       <ErrorNotice error={state.error} />
       <Section title="Encryption">
         {state.isPending ? (
@@ -641,11 +649,13 @@ export function Security() {
               type="button"
               className="btn btn-sm"
               disabled={exportKey.isPending}
-              onClick={() => {
+              onClick={async () => {
                 if (
-                  confirm(
-                    'Download the current custom archive key? Keep the file private and store it outside this device.',
-                  )
+                  await ask({
+                    title: 'Download the custom key?',
+                    message: 'Keep the file private and store it somewhere other than this computer.',
+                    confirm: 'Download',
+                  })
                 )
                   exportKey.mutate()
               }}

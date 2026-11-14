@@ -99,6 +99,6 @@ func (c *Client) ReplaceDevice(ctx context.Context, id, confirm string) error {
 	}
 	body, _ := json.Marshal(map[string]string{"guid": id})
 	raw, err := c.legacyRequest(ctx, "ReplaceDeviceResponseMessage", "POST", "/v0/ReplaceDeviceRequest", body, true, true)
-	_, err = restoreResponse(raw, err, "ReplaceDeviceResponseMessage")
+	_, err = actionResponse(raw, err, "ReplaceDeviceResponseMessage")
 	return err
 }

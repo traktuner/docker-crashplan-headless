@@ -16,6 +16,7 @@ import {
   Section,
   Spinner,
 } from '../../shared/components'
+import { dateTime, words } from '../../shared/format'
 import { AccountDevices, DeviceNames } from './AccountDevices'
 import './account.css'
 
@@ -74,6 +75,14 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
     queryKey: ['devices'],
     queryFn: () => api.devices(),
     enabled: signedIn,
+  })
+  // Newer backends report the full signed-in summary; older ones do not, and
+  // the page then falls back to the sign-in setup values.
+  const summary = useQuery({
+    queryKey: ['account-summary'],
+    queryFn: () => api.account(),
+    enabled: signedIn,
+    retry: false,
   })
   // Password sign-in only for accounts without verification code; the
   // desktop app always uses the browser.
@@ -183,8 +192,8 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
   const problems = {
     username: !info.username.trim()
       ? info.register
-        ? 'Enter the e-mail address for the new account.'
-        : 'Enter your CrashPlan e-mail address or user name.'
+        ? 'Enter the email address for the new account.'
+        : 'Enter your CrashPlan email address or user name.'
       : '',
     serverAddress:
       manualServer && !info.serverAddress.trim()
@@ -213,7 +222,16 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
       .filter(Boolean)
       .join(' ') || knownAccount
   const deviceName =
-    devices.data?.find((d) => d.self)?.name || text(setup.data?.osHostname)
+    summary.data?.deviceName ||
+    devices.data?.find((d) => d.self)?.name ||
+    text(setup.data?.osHostname)
+  const server = summary.data?.server || knownServer
+  const email = summary.data?.username || knownAccount
+  const version = summary.data?.productVersion
+  const license = summary.data?.licenseType
+    ? words(summary.data.licenseType) +
+      (Number(summary.data.licenseExpires) > 0 ? ` · until ${dateTime(summary.data.licenseExpires)}` : '')
+    : undefined
   const error =
     configuration.error ??
     login.error ??
@@ -312,7 +330,7 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
             : 'A CrashPlan sign-in page opens in a new browser tab, where you enter your password and verification code. This page completes by itself.'}
       </p>
       <Field
-        label={info.register ? 'E-mail address' : 'E-mail or user name'}
+        label={info.register ? 'Email address' : 'Email or user name'}
         hint={
           knownAccount
             ? 'CrashPlan on this device is linked to this account.'
@@ -331,13 +349,13 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
           onChange={(e) => field('username', e.target.value)}
         />
         {shown('username') && (
-          <span className="field-error">{shown('username')}</span>
+          <span className="field-error" role="alert">{shown('username')}</span>
         )}
       </Field>
       {manualServer && (
         <Field
           label="Server address"
-          hint="Only needed when CrashPlan cannot find your server from the e-mail address."
+          hint="Only needed when CrashPlan cannot find your server from the email address."
         >
           <input
             className="input"
@@ -348,7 +366,7 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
             autoCapitalize="none"
           />
           {shown('serverAddress') && (
-            <span className="field-error">{shown('serverAddress')}</span>
+            <span className="field-error" role="alert">{shown('serverAddress')}</span>
           )}
         </Field>
       )}
@@ -364,7 +382,7 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
                 onChange={(e) => field('firstName', e.target.value)}
               />
               {shown('firstName') && (
-                <span className="field-error">{shown('firstName')}</span>
+                <span className="field-error" role="alert">{shown('firstName')}</span>
               )}
             </Field>
             <Field label="Last name">
@@ -376,7 +394,7 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
                 onChange={(e) => field('lastName', e.target.value)}
               />
               {shown('lastName') && (
-                <span className="field-error">{shown('lastName')}</span>
+                <span className="field-error" role="alert">{shown('lastName')}</span>
               )}
             </Field>
           </div>
@@ -405,7 +423,7 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
             onChange={(e) => setPassword(e.target.value)}
           />
           {shown('password') && (
-            <span className="field-error">{shown('password')}</span>
+            <span className="field-error" role="alert">{shown('password')}</span>
           )}
         </Field>
       )}
@@ -483,8 +501,8 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
 
   return (
     <Page
-      title="CrashPlan account"
-      subtitle="The CrashPlan account this device backs up to."
+      title="Account & devices"
+      subtitle="The CrashPlan account this device backs up to, and the devices that belong to it."
     >
       {firstSignIn && (
         <Notice>
@@ -542,15 +560,11 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
                     <UserRound size={16} aria-hidden="true" />
                   </span>
                 }
-                title={accountName || 'CrashPlan account'}
-                detail={
-                  knownAccount && knownAccount !== accountName
-                    ? knownAccount
-                    : undefined
-                }
+                title={accountName || email || 'CrashPlan account'}
+                detail={email && email !== accountName ? email : undefined}
                 value={<Badge tone="green">Signed in</Badge>}
               />
-              {knownServer && <Row title="Server" value={knownServer} />}
+              {server && <Row title="Server" value={<span className="wrap-anywhere">{server}</span>} />}
               <Row
                 title="This device"
                 value={
@@ -558,6 +572,8 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
                   (devices.isPending ? 'Loading…' : 'Not reported')
                 }
               />
+              {version && <Row title="CrashPlan version" value={version} />}
+              {license && <Row title="License" value={license} />}
             </Section>
           )}
           {showForm && (

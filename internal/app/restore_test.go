@@ -178,3 +178,21 @@ func TestRestorePublicUnixRoundTrip(t *testing.T) {
 		t.Fatal("changed replay crossed public boundary", status, err, string(raw))
 	}
 }
+
+func TestRestoreJobsCarryStateAndClearCompletedAnswersCount(t *testing.T) {
+	s, _ := restoreFixture(t)
+	w := request(s.UnixHandler(), "GET", "/api/v1/restore/jobs", "", nil, "", "")
+	for _, field := range []string{`"state":"waiting"`, `"rateBytesPerSecond":"0"`, `"remainingMs":"-1"`} {
+		if w.Code != 200 || !strings.Contains(w.Body.String(), field) {
+			t.Fatal("restore job contract field missing", field, w.Code, w.Body.String())
+		}
+	}
+	if strings.Contains(w.Body.String(), "blockedReason") {
+		t.Fatal("empty blockedReason must be omitted", w.Body.String())
+	}
+	// The only fixture job is not completed: nothing is removed.
+	w = request(s.UnixHandler(), "POST", "/api/v1/restore/jobs/clear-completed", `{}`, nil, "", "")
+	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != `{"data":{"removed":0}}` {
+		t.Fatal(w.Code, w.Body.String())
+	}
+}

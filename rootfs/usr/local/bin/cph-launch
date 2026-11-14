@@ -92,12 +92,42 @@ args=(
     -Djava.class.path=lib/cpg-agent-service.jar:lang
 )
 
+# --- compressed object references ---------------------------------------------
+# Above 32736 MiB the JVM drops compressed references, so a 40G heap holds
+# about what a 31G one does. Up to about 64 GiB, 16-byte object alignment
+# keeps them (measured on the bundled JRE: 28.7% -> 5.9% overhead on a
+# file-metadata graph). CPH_WIDE_OOPS=1 keeps the JVM default. ZGC never uses
+# compressed references, so the flag would only cost memory there.
+if (( XMX_MB > 32736 && XMX_MB <= 65000 )) && ! is_true "${CPH_WIDE_OOPS:-0}" && [[ "${CPH_GC:-g1}" != zgc ]]; then
+    args+=(-XX:ObjectAlignmentInBytes=16)
+    OOPS="compressed-16"
+elif (( XMX_MB > 32736 )); then
+    OOPS="wide"
+else
+    OOPS="compressed"
+fi
+
+# --- out of memory -----------------------------------------------------------
+# A Java OutOfMemoryError can kill backup threads while the service still
+# answers status requests. Exit instead: cphd reports ENGINE_EXITED and the
+# container restart policy starts a fresh engine.
+args+=(-XX:+ExitOnOutOfMemoryError)
+
+# The heap is not the whole process: metaspace, threads, LevelDB/SQLite and
+# direct buffers live outside it. Warn when the container limit leaves less
+# than 2 GiB for them, because the kernel then kills the engine mid-write.
+limit="$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)"
+if [[ "$limit" =~ ^[0-9]+$ ]] && (( XMX_MB + 2048 > limit / 1048576 )); then
+    log "WARNING: heap ${XMX_MB}m leaves under 2 GiB for native memory below the container memory limit of $(( limit / 1048576 ))m; lower CRASHPLAN_SRV_MAX_MEM or raise the limit"
+fi
+
 # --- garbage collector: give memory back to the host -------------------------
 case "${CPH_GC:-g1}" in
     g1)
         # A periodic concurrent cycle when idle lets G1 shrink and uncommit
         # the heap after the big verification scan instead of holding it.
-        args+=(-XX:+UseG1GC -XX:G1PeriodicGCInterval="${CPH_G1_PERIODIC_GC_MS:-300000}")
+        # Every 15 minutes: with a live heap of many GB each cycle costs CPU.
+        args+=(-XX:+UseG1GC -XX:G1PeriodicGCInterval="${CPH_G1_PERIODIC_GC_MS:-900000}")
         ;;
     shenandoah)
         args+=(-XX:+UseShenandoahGC -XX:ShenandoahUncommitDelay="${CPH_UNCOMMIT_DELAY_MS:-300000}")
@@ -154,5 +184,5 @@ export LD_LIBRARY_PATH="$NLIB"
 export LD_PRELOAD="$NLIB/libwrapper.so"
 
 cd "$CP_DIR"
-log "heap=${XMX_MB}m gc=${CPH_GC:-g1} diagnostics=${CPH_DIAGNOSTICS:-0} patches=${CPH_PATCHES:-none}"
+log "heap=${XMX_MB}m oops=${OOPS} gc=${CPH_GC:-g1} diagnostics=${CPH_DIAGNOSTICS:-0} patches=${CPH_PATCHES:-none}"
 exec "$JAVA" "${args[@]}" com.backup42.service.CPService

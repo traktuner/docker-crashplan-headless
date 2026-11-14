@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
+	"sort"
 	"strings"
 	"time"
 )
@@ -23,9 +24,19 @@ type DestinationProgress struct {
 	NotReadyCode string             `json:"notReadyCode,omitempty"`
 	OutOfSpace   bool               `json:"outOfSpace"`
 	RateBytes    string             `json:"completedRateBytesPerSecond"`
-	Sets         []SetProgress      `json:"sets"`
+	// Connected is computer_model.isConnected: self, a child (local folder)
+	// or properties.DCODE == CONNECTED.
+	Connected bool `json:"connected"`
+	// DisconnectCode is properties.DCODE when not connected, omitted when unknown.
+	DisconnectCode string `json:"disconnectCode,omitempty"`
+	// SystemResumeTime is the epoch millisecond time a system-wide pause ends
+	// (BackupStatsSummary.resumeSystemTime), "0" when not paused.
+	SystemResumeTime string        `json:"systemResumeTime"`
+	Sets             []SetProgress `json:"sets"`
 	// Error is set when this destination could not be read; others still are.
 	Error string `json:"error,omitempty"`
+	// usedBytes is backupStats.remoteManifestSize, for the device list.
+	usedBytes string
 }
 
 // ProgressCounter carries exact decimal counts and a percentage clamped to
@@ -45,7 +56,8 @@ type MaintenanceStatus struct {
 }
 
 type SetProgress struct {
-	BackupSetID    string `json:"backupSetId"`
+	BackupSetID string `json:"backupSetId"`
+	// Scanning is the stock rule scanStats.scanning || fileTodoStats.scanning.
 	Scanning       bool   `json:"scanning"`
 	Selected       bool   `json:"selected"`
 	FilesScanned   string `json:"filesScanned"`
@@ -59,6 +71,20 @@ type SetProgress struct {
 	ResumeTime string `json:"resumeTime"`
 	// SendingPath is the file being transferred right now, as in the desktop status line.
 	SendingPath string `json:"sendingPath,omitempty"`
+	// TotalFiles and TotalBytes are the selection size (scanStats.totalFiles /
+	// totalSize); without scan statistics they fall back to the scanned counts.
+	TotalFiles string `json:"totalFiles"`
+	TotalBytes string `json:"totalBytes"`
+	// ScheduledBytes is numScheduledBytes (files waiting in the holding queue).
+	ScheduledBytes string `json:"scheduledBytes"`
+	// InFlightBytes is the done part of the file being sent or analyzed.
+	InFlightBytes string `json:"inFlightBytes"`
+	// Percent is the stock completion (0..100, two decimals) or -1 when unknown.
+	Percent            float64 `json:"percent"`
+	Complete           bool    `json:"complete"`
+	CheckingForDeletes bool    `json:"checkingForDeletes"`
+	EverBackedUp       bool    `json:"everBackedUp"`
+	todo               setTodo
 }
 
 // progressFresh is how long one engine reading serves every open page.
@@ -78,17 +104,19 @@ func (c *Client) BackupProgress(ctx context.Context) ([]DestinationProgress, err
 	if c.progressRev == revision && time.Since(c.progressAt) < progressFresh && (c.progressCache != nil || c.progressErr != nil) {
 		return c.progressCache, c.progressErr
 	}
-	out, err := c.readProgress(ctx)
+	out, err := c.readProgress(ctx, revision)
 	c.progressCache, c.progressErr, c.progressAt, c.progressRev = out, err, time.Now(), revision
 	return out, err
 }
 
-func (c *Client) readProgress(ctx context.Context) ([]DestinationProgress, error) {
-	// A closed page must not abandon a native request halfway: the engine
-	// answer is still read, so the response lane stays in step.
-	native, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	defer cancel()
+// progressTargets returns the computer list, reused for targetsFresh within
+// one session revision so a steady poll costs one GetBackupStats per target.
+func (c *Client) progressTargets(native context.Context, revision uint64) ([]Device, error) {
+	if devices, ok := c.cachedTargets(revision); ok {
+		return devices, nil
+	}
 	var devices []Device
+	epoch := c.targetsEpochNow()
 	_, err := c.legacyProbe(native, "ComputersMessage", "GET", "/v0/GetComputers", nil, true, func(raw []byte) probeResult {
 		decoded, e := restoreResponse(raw, nil, "ComputersMessage")
 		if e != nil {
@@ -103,6 +131,19 @@ func (c *Client) readProgress(ctx context.Context) ([]DestinationProgress, error
 	if err != nil {
 		return nil, err
 	}
+	c.storeTargets(revision, epoch, devices)
+	return devices, nil
+}
+
+func (c *Client) readProgress(ctx context.Context, revision uint64) ([]DestinationProgress, error) {
+	// A closed page must not abandon a native request halfway: the engine
+	// answer is still read, so the response lane stays in step.
+	native, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	devices, err := c.progressTargets(native, revision)
+	if err != nil {
+		return nil, err
+	}
 	out := []DestinationProgress{}
 	for _, device := range devices {
 		if !device.Target || device.Deleted || device.Self {
@@ -113,9 +154,132 @@ func (c *Client) readProgress(ctx context.Context) ([]DestinationProgress, error
 			progress = DestinationProgress{TargetID: device.ID, Sets: []SetProgress{}, RateBytes: "0", Error: progressError(err)}
 		}
 		progress.Name = device.Name
+		progress.Connected = device.Connected
+		progress.DisconnectCode = device.DisconnectCode
 		out = append(out, progress)
 	}
+	if len(out) == 0 {
+		return out, nil
+	}
+	// The system pause applies to every destination. Without it the status
+	// would claim "not paused", so a failed read fails the whole reading.
+	resume, err := c.systemResumeTime(native)
+	if err != nil {
+		return nil, err
+	}
+	scans := map[string]setScan{}
+	for i := range out {
+		out[i].SystemResumeTime = resume
+		for j := range out[i].Sets {
+			set := &out[i].Sets[j]
+			scan, ok := scans[set.BackupSetID]
+			if !ok {
+				scan = c.setScanStats(native, set.BackupSetID)
+				scans[set.BackupSetID] = scan
+			}
+			finishSet(set, scan)
+		}
+	}
 	return out, nil
+}
+
+// finishSet applies the stock rules once the scan statistics are known.
+func finishSet(set *SetProgress, scan setScan) {
+	t := set.todo
+	set.Scanning = t.scanning || (scan.present && scan.scanning)
+	set.CheckingForDeletes = scan.present && scan.checkingForDeletes
+	if scan.present {
+		set.TotalFiles, set.TotalBytes = nonNegative(scan.totalFiles), nonNegative(scan.totalSize)
+	} else {
+		set.TotalFiles, set.TotalBytes = set.FilesScanned, set.BytesScanned
+	}
+	set.InFlightBytes = nonNegative(t.inFlightBytes)
+	set.Percent = completionPercent(t, scan)
+	set.Complete = backupComplete(t, scan, true)
+}
+
+// systemResumeTime reads BackupStatsSummary.resumeSystemTime and returns it
+// only while it lies in the future (stock getRemainingSystemResumeInMs > 0).
+func (c *Client) systemResumeTime(ctx context.Context) (string, error) {
+	raw, err := c.legacyRead(ctx, "BackupStatsSummaryMessage", "GET", "/v0/GetBackupStatsSummary", nil, anyAnswer)
+	raw, err = restoreResponse(raw, err, "BackupStatsSummaryMessage")
+	if err != nil {
+		return "", err
+	}
+	return parseSystemResume(raw, time.Now().UnixMilli())
+}
+
+func parseSystemResume(raw []byte, now int64) (string, error) {
+	var wire struct {
+		Stats *struct {
+			Resume json.RawMessage `json:"resumeSystemTime"`
+		} `json:"stats"`
+	}
+	if json.Unmarshal(raw, &wire) != nil || wire.Stats == nil {
+		return "", &FieldError{Field: "stats"}
+	}
+	resume := bigOf(wire.Stats.Resume)
+	if len(wire.Stats.Resume) > 0 && string(wire.Stats.Resume) != "null" && resume == nil {
+		return "", &FieldError{Field: "stats.resumeSystemTime"}
+	}
+	if resume == nil || resume.Cmp(big.NewInt(now)) <= 0 {
+		return "0", nil
+	}
+	return resume.String(), nil
+}
+
+// setScanStats reads GetScanStats for one backup set. Only an answer that
+// echoes the set is used; anything else counts as "no scan statistics", which
+// makes the percentage unknown instead of borrowing another set's numbers.
+func (c *Client) setScanStats(ctx context.Context, setID string) setScan {
+	body, _ := json.Marshal(struct {
+		ID string `json:"backupSetId"`
+	}{setID})
+	var parsed setScan
+	_, err := c.legacyRead(ctx, "ScanStatsMessage", "PUT", "/v0/GetScanStats", body, func(decoded []byte) probeResult {
+		scan, echo, ok := parseScanStats(decoded)
+		switch {
+		case !ok:
+			return probeMismatch
+		case echo == setID:
+			parsed = scan
+			return probeInStep
+		case echo != "":
+			return probeMismatch
+		default:
+			// No statistics yet: an empty answer proves nothing either way.
+			return probeUnknown
+		}
+	})
+	if err != nil {
+		return setScan{}
+	}
+	return parsed
+}
+
+// parseScanStats reads the flattened ScanStatsMessage. echo is the answered
+// backup set; ok is false when the answer is not a scan statistics object.
+func parseScanStats(raw []byte) (setScan, string, bool) {
+	var wire map[string]json.RawMessage
+	if json.Unmarshal(raw, &wire) != nil || wire == nil {
+		return setScan{}, "", false
+	}
+	scanning, has := wire["scanning"]
+	if !has || string(scanning) == "null" {
+		return setScan{}, "", true
+	}
+	var s setScan
+	if json.Unmarshal(scanning, &s.scanning) != nil {
+		return setScan{}, "", false
+	}
+	echo := decimal(wire["backupSetId"])
+	if echo == "" || !validID(echo) {
+		return setScan{}, "", false
+	}
+	s.present = true
+	s.checkingForDeletes = jsonTrue(wire["checkingForDeletes"])
+	s.totalFiles, s.totalSize = bigOf(wire["totalFiles"]), bigOf(wire["totalSize"])
+	return s, echo, true
 }
 
 func progressError(err error) string {
@@ -163,98 +327,6 @@ func (c *Client) destinationProgress(ctx context.Context, target string) (Destin
 	return parsed, nil
 }
 
-// legacyRead is the recoverable path for read-only legacy classes. check
-// receives the decoded answer and says whether it proves the lane in step.
-func (c *Client) legacyRead(ctx context.Context, class, method, path string, body []byte, check func([]byte) probeResult) ([]byte, error) {
-	return c.legacyReadAuth(ctx, class, method, path, body, true, check)
-}
-
-func (c *Client) legacyReadAuth(ctx context.Context, class, method, path string, body []byte, auth bool, check func([]byte) probeResult) ([]byte, error) {
-	return c.legacyProbe(ctx, class, method, path, body, auth, func(raw []byte) probeResult {
-		decoded, err := restoreResponse(raw, nil, class)
-		if err != nil {
-			if errors.Is(err, ErrProtocol) {
-				return probeMismatch
-			}
-			// A rejection of the right class is an answer, but proves nothing.
-			return probeUnknown
-		}
-		return check(decoded)
-	})
-}
-
-// anyAnswer suits requests without parameters: every answer of the class fits.
-func anyAnswer([]byte) probeResult { return probeInStep }
-
-type probeResult int
-
-const (
-	probeMismatch probeResult = iota // not this request's answer: lane uncertain
-	probeUnknown                     // usable, but proves nothing: lane unchanged
-	probeInStep                      // verifiably this request's answer: lane certain
-)
-
-// legacyProbe is legacyRequest for read-only status classes. A lost answer
-// marks the lane uncertain like any legacy request, but a later answer that
-// verifiably belongs to this request (matching target) clears it again, so a
-// closed page or one timeout does not disable the class until a restart.
-func (c *Client) legacyProbe(ctx context.Context, class, method, path string, body []byte, auth bool, verify func([]byte) probeResult) ([]byte, error) {
-	c.mu.Lock()
-	if ctx.Value(generationKey{}) == nil && c.lifetime != nil {
-		ctx = context.WithValue(ctx, generationKey{}, c.lifetime.Value(generationKey{}))
-	}
-	if c.legacy == nil {
-		c.legacy = make(map[string]*legacyLane)
-	}
-	lane := c.legacy[class]
-	if lane == nil {
-		lane = &legacyLane{gate: make(chan struct{}, 1)}
-		c.legacy[class] = lane
-	}
-	c.mu.Unlock()
-	select {
-	case lane.gate <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ErrUnavailable
-	}
-	defer func() { <-lane.gate }()
-	if !c.currentGeneration(ctx) || ctx.Err() != nil {
-		return nil, ErrUnavailable
-	}
-	// Once sent, the answer is read even if the caller is cancelled (a closed
-	// page, an ended worker wait): an abandoned answer is what makes a lane
-	// uncertain. The caller's deadline still applies; the HTTP client caps
-	// every request at its own timeout as well.
-	deadline := time.Now().Add(2 * time.Minute)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-		deadline = d
-	}
-	ctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
-	defer cancel()
-	raw, err := c.request(ctx, method, path, body, auth, false)
-	if err == nil && !c.currentGeneration(ctx) {
-		err = ErrUnavailable
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if err != nil {
-		if !errors.Is(err, ErrUnauthorized) && !errors.Is(err, ErrNotDispatched) {
-			lane.uncertain = true
-		}
-		return raw, err
-	}
-	switch verify(raw) {
-	case probeInStep:
-		lane.uncertain = false
-		return raw, nil
-	case probeUnknown:
-		return raw, nil
-	default:
-		lane.uncertain = true
-		return raw, ErrProtocol
-	}
-}
-
 func parseDestinationProgress(raw []byte, target string) (DestinationProgress, error) {
 	var wire struct {
 		Stats *struct {
@@ -267,13 +339,14 @@ func parseDestinationProgress(raw []byte, target string) (DestinationProgress, e
 			NotReady   json.RawMessage            `json:"backupNotReadyCode"`
 			OutOfSpace json.RawMessage            `json:"outOfSpace"`
 			Rate       json.RawMessage            `json:"sessionCompletedRateInBytesPerSec"`
+			Manifest   json.RawMessage            `json:"remoteManifestSize"`
 			FileTodo   map[string]json.RawMessage `json:"fileTodoStats"`
 		} `json:"backupStats"`
 	}
 	if json.Unmarshal(raw, &wire) != nil {
 		return DestinationProgress{}, &FieldError{Field: "backupStats"}
 	}
-	out := DestinationProgress{TargetID: target, Sets: []SetProgress{}, RateBytes: "0"}
+	out := DestinationProgress{TargetID: target, Sets: []SetProgress{}, RateBytes: "0", SystemResumeTime: "0"}
 	s := wire.Stats
 	if s == nil {
 		// No stats yet for this destination, for example right after start.
@@ -288,6 +361,7 @@ func parseDestinationProgress(raw []byte, target string) (DestinationProgress, e
 	if r := decimalFloor(s.Rate); r != "" {
 		out.RateBytes = r
 	}
+	out.usedBytes = decimal(s.Manifest)
 	if code := text(s.NotReady); code != "" && len(code) < 128 {
 		out.NotReadyCode = code
 	}
@@ -299,26 +373,25 @@ func parseDestinationProgress(raw []byte, target string) (DestinationProgress, e
 			out.Sync = &ProgressCounter{Current: orZero(current), Total: orZero(total), Percent: ratioPercent(current, total), Files: files}
 		}
 	}
-	if m := maintenance(s.Archive, false); m != nil {
-		out.Maintenance = m
-	} else if m := maintenance(s.Cache, true); m != nil {
-		out.Maintenance = m
-	}
+	out.Maintenance = maintenanceStatus(s.Archive, s.Cache)
 	for id, rawSet := range s.FileTodo {
 		if !validID(id) {
 			continue
 		}
 		var set struct {
-			Scanning bool                       `json:"scanning"`
-			Selected bool                       `json:"selectedForBackup"`
-			Files    json.RawMessage            `json:"numFilesScanned"`
-			Bytes    json.RawMessage            `json:"numBytesScanned"`
-			RemFiles json.RawMessage            `json:"numRemainingFilesToBackup"`
-			RemBytes json.RawMessage            `json:"numRemainingSourceBytes"`
-			Last     json.RawMessage            `json:"lastBackupTimestamp"`
-			Next     json.RawMessage            `json:"nextBackupTimestamp"`
-			Resume   json.RawMessage            `json:"resumeTime"`
-			Sending  map[string]json.RawMessage `json:"sendingFileTodo"`
+			Scanning  bool                       `json:"scanning"`
+			Selected  bool                       `json:"selectedForBackup"`
+			Files     json.RawMessage            `json:"numFilesScanned"`
+			Bytes     json.RawMessage            `json:"numBytesScanned"`
+			RemFiles  json.RawMessage            `json:"numRemainingFilesToBackup"`
+			RemBytes  json.RawMessage            `json:"numRemainingSourceBytes"`
+			SchFiles  json.RawMessage            `json:"numScheduledFiles"`
+			SchBytes  json.RawMessage            `json:"numScheduledBytes"`
+			Last      json.RawMessage            `json:"lastBackupTimestamp"`
+			Next      json.RawMessage            `json:"nextBackupTimestamp"`
+			Resume    json.RawMessage            `json:"resumeTime"`
+			Sending   map[string]json.RawMessage `json:"sendingFileTodo"`
+			Analyzing map[string]json.RawMessage `json:"analyzingFileTodo"`
 		}
 		if json.Unmarshal(rawSet, &set) != nil {
 			return DestinationProgress{}, &FieldError{Field: "backupStats.fileTodoStats"}
@@ -326,7 +399,13 @@ func parseDestinationProgress(raw []byte, target string) (DestinationProgress, e
 		item := SetProgress{BackupSetID: id, Scanning: set.Scanning, Selected: set.Selected,
 			FilesScanned: orZero(decimal(set.Files)), BytesScanned: orZero(decimal(set.Bytes)),
 			RemainingFiles: orZero(decimal(set.RemFiles)), RemainingBytes: orZero(decimal(set.RemBytes)),
-			LastBackup: signed(set.Last), NextBackup: signed(set.Next), ResumeTime: signed(set.Resume)}
+			LastBackup: signed(set.Last), NextBackup: signed(set.Next), ResumeTime: signed(set.Resume),
+			ScheduledBytes: nonNegative(bigOf(set.SchBytes))}
+		item.EverBackedUp = item.LastBackup != "-1" && item.LastBackup != "0"
+		item.todo = setTodo{scanning: set.Scanning, selected: set.Selected,
+			filesScanned: bigOf(set.Files), bytesScanned: bigOf(set.Bytes),
+			remainingFiles: bigOf(set.RemFiles), remainingBytes: bigOf(set.RemBytes),
+			scheduledFiles: bigOf(set.SchFiles), inFlightBytes: inFlightBytes(set.Sending, set.Analyzing)}
 		if set.Sending != nil {
 			var file struct {
 				Backup struct {
@@ -337,42 +416,20 @@ func parseDestinationProgress(raw []byte, target string) (DestinationProgress, e
 				item.SendingPath = file.Backup.Path
 			}
 		}
+		// Until scan statistics are applied, the set has the stock "no basis" values.
+		finishSet(&item, setScan{})
 		out.Sets = append(out.Sets, item)
 	}
+	sort.Slice(out.Sets, func(i, j int) bool { return lessID(out.Sets[i].BackupSetID, out.Sets[j].BackupSetID) })
 	return out, nil
 }
 
-func maintenance(raw map[string]json.RawMessage, cache bool) *MaintenanceStatus {
-	if raw == nil {
-		return nil
+// lessID orders exact decimal IDs numerically.
+func lessID(a, b string) bool {
+	if len(a) != len(b) {
+		return len(a) < len(b)
 	}
-	var running bool
-	if json.Unmarshal(raw["running"], &running) != nil || !running {
-		return nil
-	}
-	m := &MaintenanceStatus{Cache: cache, Percent: -1}
-	_ = json.Unmarshal(raw["deepMaintenance"], &m.Deep)
-	var verifying bool
-	_ = json.Unmarshal(raw["verifyingBlockManifest"], &verifying)
-	state := text(raw["reduceState"])
-	switch {
-	case verifying:
-		m.Step = "verifying_blocks"
-	case state != "":
-		m.Step = strings.ToLower(state)
-	default:
-		m.Step = "verifying_files"
-	}
-	// The desktop app reports the step whose counters are active.
-	for _, name := range []string{"step5", "step4", "step3", "step2", "step1", "verify"} {
-		var stats map[string]json.RawMessage
-		if json.Unmarshal(raw[name], &stats) == nil && stats != nil && decimal(stats["total"]) != "" && decimal(stats["total"]) != "0" {
-			done := sum(decimal(stats["start"]), decimal(stats["numCompleted"]))
-			m.Percent = ratioPercent(done, decimal(stats["total"]))
-			break
-		}
-	}
-	return m
+	return a < b
 }
 
 // FieldError names the native field that did not match. It never carries values.
@@ -428,13 +485,6 @@ func orZero(s string) string {
 		return "0"
 	}
 	return s
-}
-
-func sum(a, b string) string {
-	x, y := new(big.Int), new(big.Int)
-	x.SetString(orZero(a), 10)
-	y.SetString(orZero(b), 10)
-	return x.Add(x, y).String()
 }
 
 func ratioPercent(current, total string) float64 {

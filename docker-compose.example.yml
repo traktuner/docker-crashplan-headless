@@ -32,7 +32,7 @@ services:
       CPH_PATCHES: no-file-watcher,no-watcher-walk
       # Advanced JVM tuning. Defaults suit scan-based operation.
       CPH_GC: ${CPH_GC:-g1}
-      CPH_G1_PERIODIC_GC_MS: ${CPH_G1_PERIODIC_GC_MS:-300000}
+      CPH_G1_PERIODIC_GC_MS: ${CPH_G1_PERIODIC_GC_MS:-900000}
       CPH_UNCOMMIT_DELAY_MS: ${CPH_UNCOMMIT_DELAY_MS:-300000}
       CPH_MAX_HEAP_FREE_RATIO: ${CPH_MAX_HEAP_FREE_RATIO:-30}
       CPH_MIN_HEAP_FREE_RATIO: ${CPH_MIN_HEAP_FREE_RATIO:-15}

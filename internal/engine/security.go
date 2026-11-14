@@ -317,7 +317,7 @@ func (c *Client) securityMutation(ctx context.Context, class, method, path strin
 		return err
 	}
 	raw, err := c.legacyRequest(ctx, class, method, path, body, true, true)
-	raw, err = restoreResponse(raw, err, class)
+	raw, err = actionResponse(raw, err, class)
 	if err != nil {
 		return err
 	}

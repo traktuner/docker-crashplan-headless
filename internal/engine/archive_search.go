@@ -11,6 +11,14 @@ import (
 var ErrSearchPending = errors.New("ARCHIVE_SEARCH_PENDING")
 var ErrSearchScope = errors.New("ARCHIVE_SEARCH_SCOPE_UNSUPPORTED")
 
+const searchClass = "SearchFileVersionsResultMessage"
+
+// searchUncertainTTL bounds how long a search without a terminal event blocks
+// the next one. The drain already waited 30 s; enriched archives echo pattern
+// and GUID, so a late foreign result is rejected, and V1 results still have
+// to match the complete query identity.
+const searchUncertainTTL = 10 * time.Minute
+
 type ArchiveSearch struct {
 	ArchiveQuery
 	Pattern  string `json:"pattern"`
@@ -56,8 +64,8 @@ func (c *Client) SearchArchive(ctx context.Context, credentials RestoreCredentia
 	if !c.searchMu.TryLock() {
 		return ArchivePage{}, ErrSearchPending
 	}
+	uncertain := c.readLaneUncertain(searchClass)
 	c.mu.RLock()
-	uncertain := c.searchUncertain
 	life := c.lifetime
 	c.mu.RUnlock()
 	if uncertain {
@@ -73,7 +81,7 @@ func (c *Client) SearchArchive(ctx context.Context, credentials RestoreCredentia
 	life = context.WithValue(life, sessionKey{}, ctx.Value(sessionKey{}))
 	work, cancel := context.WithTimeout(life, 30*time.Second)
 	bus := c.EventBus()
-	events, unsubscribe, err := bus.Subscribe("SearchFileVersionsResultMessage")
+	events, unsubscribe, err := bus.Subscribe(searchClass)
 	if err != nil {
 		cancel()
 		c.searchMu.Unlock()
@@ -81,12 +89,7 @@ func (c *Client) SearchArchive(ctx context.Context, credentials RestoreCredentia
 	}
 	finish := func(drained bool) {
 		if !drained {
-			c.mu.Lock()
-			marker := work.Value(generationKey{})
-			if marker == nil || (c.lifetime != nil && c.lifetime.Value(generationKey{}) == marker) {
-				c.searchUncertain = true
-			}
-			c.mu.Unlock()
+			c.markReadUncertain(work, searchClass, causeDrain, searchUncertainTTL)
 		}
 		cancel()
 		unsubscribe()
@@ -178,8 +181,14 @@ func (c *Client) SearchArchive(ctx context.Context, credentials RestoreCredentia
 		finish(true)
 		return ArchivePage{}, requestErr
 	}
-	decoded, decodeErr := restoreResponse(raw, requestErr, "SearchFileVersionsResultMessage")
+	decoded, decodeErr := restoreResponse(raw, requestErr, searchClass)
 	if decodeErr != nil {
+		if requestErr != nil && receivedRejection(raw, searchClass) {
+			// The native handler answered with error ids: the search ended
+			// and no result stream follows.
+			finish(true)
+			return ArchivePage{}, decodeErr
+		}
 		background()
 		return ArchivePage{}, decodeErr
 	}

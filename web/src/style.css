@@ -12,14 +12,22 @@
   --sidebar: #ececef;
   --label: #1d1d1f;
   --label-2: #6e6e73;
-  --label-3: #8e8e93;
+  --label-3: #6e6e73;
   --separator: rgb(60 60 67 / 0.14);
-  --separator-strong: rgb(60 60 67 / 0.26);
-  --accent: #007aff;
-  --accent-hover: #0066d6;
+  --separator-strong: rgb(60 60 67 / 0.45);
+  --accent: #0066d6;
+  --accent-hover: #0057b8;
   --accent-soft: rgb(0 122 255 / 0.1);
+  /* Filled accent (primary buttons, current page): white text at 4.5:1. */
+  --accent-fill: #0071e3;
+  --accent-fill-hover: #0062c4;
   --on-accent: #ffffff;
-  --green: #248a3d;
+  /* Row icon fills that keep a white glyph readable in both themes. */
+  --icon-green: #1d7a34;
+  --icon-orange: #c45200;
+  --icon-gray: #6e6e73;
+  --switch-off: #d1d1d6;
+  --green: #1d7a34;
   --green-fill: #34c759;
   --green-soft: rgb(52 199 89 / 0.13);
   --orange: #c93400;
@@ -47,9 +55,12 @@
     --sidebar: #19191b;
     --label: #f5f5f7;
     --label-2: #a1a1a6;
-    --label-3: #7c7c80;
+    --label-3: #98989d;
     --separator: rgb(84 84 88 / 0.45);
-    --separator-strong: rgb(84 84 88 / 0.75);
+    --separator-strong: rgb(120 120 128 / 0.9);
+    --accent-fill: #0071e3;
+    --accent-fill-hover: #1a82f0;
+    --switch-off: #48484a;
     --accent: #0a84ff;
     --accent-hover: #409cff;
     --accent-soft: rgb(10 132 255 / 0.18);
@@ -76,9 +87,12 @@
   --sidebar: #19191b;
   --label: #f5f5f7;
   --label-2: #a1a1a6;
-  --label-3: #7c7c80;
+  --label-3: #98989d;
   --separator: rgb(84 84 88 / 0.45);
-  --separator-strong: rgb(84 84 88 / 0.75);
+  --separator-strong: rgb(120 120 128 / 0.9);
+  --accent-fill: #0071e3;
+  --accent-fill-hover: #1a82f0;
+  --switch-off: #48484a;
   --accent: #0a84ff;
   --accent-hover: #409cff;
   --accent-soft: rgb(10 132 255 / 0.18);
@@ -182,7 +196,7 @@ kbd,
 .skip-link {
   position: absolute;
   left: 12px;
-  top: -40px;
+  top: -80px;
   z-index: 50;
   padding: 8px 12px;
   border-radius: 8px;
@@ -229,13 +243,21 @@ kbd,
   cursor: default;
 }
 .btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
   color: var(--on-accent);
 }
 .btn-primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
+  background: var(--accent-fill-hover);
+  border-color: var(--accent-fill-hover);
+}
+.btn-destructive-fill {
+  background: var(--red-fill);
+  border-color: var(--red-fill);
+  color: #fff;
+}
+.btn-destructive-fill:hover:not(:disabled) {
+  filter: brightness(0.92);
 }
 .btn-destructive {
   color: var(--red);
@@ -381,7 +403,7 @@ kbd,
   position: absolute;
   inset: 0;
   border-radius: 999px;
-  background: var(--surface-3);
+  background: var(--switch-off);
   transition: background-color 0.2s;
   pointer-events: none;
 }
@@ -457,6 +479,7 @@ kbd,
   display: grid;
   grid-template-columns: 236px minmax(0, 1fr);
   min-height: 100vh;
+  min-height: 100dvh;
 }
 .sidebar {
   position: sticky;
@@ -532,7 +555,7 @@ kbd,
   background: rgb(127 127 127 / 0.12);
 }
 .nav-item[aria-current='page'] {
-  background: var(--accent);
+  background: var(--accent-fill);
   color: var(--on-accent);
 }
 .nav-item[aria-current='page'] svg {
@@ -593,6 +616,15 @@ kbd,
 .topbar-title {
   font-weight: 600;
   font-size: 14px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topbar-title.is-shown {
+  opacity: 1;
 }
 .topbar-actions {
   margin-left: auto;
@@ -621,6 +653,7 @@ kbd,
   font-size: 11px;
 }
 .workspace {
+  container-type: inline-size;
   width: 100%;
   max-width: 1080px;
   margin: 0 auto;
@@ -766,14 +799,17 @@ kbd,
   background: var(--accent);
   color: #fff;
 }
+.row-icon {
+  background: var(--accent-fill);
+}
 .row-icon.gray {
-  background: #8e8e93;
+  background: var(--icon-gray);
 }
 .row-icon.green {
-  background: var(--green-fill);
+  background: var(--icon-green);
 }
 .row-icon.orange {
-  background: var(--orange-fill);
+  background: var(--icon-orange);
 }
 .row-chevron {
   color: var(--label-3);
@@ -917,8 +953,15 @@ kbd,
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
   .spinner,
-  .progress.indeterminate > span {
+  .progress.indeterminate > span,
+  .dot.pulse {
     animation-duration: 4s;
   }
 }
@@ -1039,8 +1082,9 @@ kbd,
 
 /* ---------- Lists (files, logs) ---------- */
 .list-scroll {
-  max-height: 520px;
+  max-height: min(520px, 70dvh);
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .file-row {
   display: grid;
@@ -1227,10 +1271,14 @@ kbd,
 .command-results .nav-item {
   min-height: 36px;
 }
+.command-results .nav-item.is-active {
+  background: var(--accent-soft);
+}
 
 /* ---------- Login ---------- */
 .login-page {
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 24px 16px;
@@ -1362,11 +1410,19 @@ kbd,
     width: 100%;
   }
   .log-row summary {
-    grid-template-columns: minmax(0, 1fr) 14px;
+    grid-template-columns: auto minmax(0, 1fr) 14px;
+    row-gap: 2px;
   }
-  .log-row summary time,
-  .log-row summary .badge {
-    grid-column: 1;
+  .log-row summary .log-level {
+    grid-column: 2;
+  }
+  .log-row summary .log-msg {
+    grid-column: 1 / 3;
+    grid-row: 2;
+  }
+  .log-row summary .chev {
+    grid-column: 3;
+    grid-row: 1 / 3;
   }
   .log-row .log-body {
     padding-left: 16px;
@@ -1378,4 +1434,668 @@ kbd,
 .segmented button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+/* ---------- Audit fixes (measured at 375–1280 px) ---------- */
+
+/* A. Grid containers: let the single column shrink below its content. */
+.workspace,
+.section,
+.settings-pane,
+.set-block,
+.set-editor,
+.row-block,
+.row-main,
+.field,
+.security-form,
+.account-form,
+.status-hero {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* B. Rows: title keeps a readable minimum, value wraps instead of pushing out. */
+.row-main {
+  flex: 1 1 9em;
+}
+.row-title,
+.row-detail {
+  overflow-wrap: anywhere;
+}
+.row-value {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
+  overflow-wrap: anywhere;
+}
+.row-control {
+  flex-wrap: wrap;
+}
+.segmented {
+  flex: 0 0 auto;
+  scrollbar-width: none;
+}
+.button-row > .truncate {
+  flex: 1 1 0;
+}
+.progress-line {
+  flex-wrap: wrap;
+  align-items: center;
+}
+.section-head {
+  flex-wrap: wrap;
+}
+.section-head > .button-row {
+  flex-wrap: nowrap;
+  margin-left: auto;
+}
+
+/* C. Sticky header: opaque enough that content never reads through it, and
+   anchors scrolled into view stop below it. */
+html {
+  scroll-padding-top: calc(60px + env(safe-area-inset-top));
+}
+.topbar {
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  padding-top: calc(8px + env(safe-area-inset-top));
+}
+
+/* D. File list header follows the row's columns. */
+@media (max-width: 900px) {
+  .file-row.head > :nth-child(5) {
+    display: none;
+  }
+}
+@media (max-width: 560px) {
+  .file-row.head {
+    display: none;
+  }
+  .file-row {
+    grid-template-columns: 44px 20px minmax(0, 1fr) 44px;
+    grid-template-areas: 'check icon name info' 'check icon meta info';
+    column-gap: 8px;
+    row-gap: 2px;
+    padding: 8px 8px 8px 4px;
+    min-height: 56px;
+  }
+  .file-row > .hit {
+    grid-area: check;
+    justify-self: center;
+  }
+  .file-row > .hit input {
+    width: 22px;
+    height: 22px;
+  }
+  .file-row > svg {
+    grid-area: icon;
+  }
+  .file-row .name {
+    grid-area: name;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .file-row .meta {
+    grid-area: meta;
+    display: flex;
+    gap: 6px;
+  }
+  .file-row .meta .date {
+    display: inline;
+  }
+  .file-row .meta .size:not(:empty)::after {
+    content: ' ·';
+  }
+  .file-row > .icon-btn {
+    grid-area: info;
+  }
+}
+.file-row .meta {
+  display: contents;
+}
+@media (max-width: 560px) {
+  .file-row .meta {
+    display: flex;
+  }
+}
+
+/* E. Touch: 44 px targets and no iOS focus zoom. */
+@media (pointer: coarse) {
+  .input,
+  .select,
+  .command-input input {
+    font-size: 16px;
+    min-height: 44px;
+  }
+  .btn,
+  .btn-sm {
+    min-height: 44px;
+    padding: 0 16px;
+    font-size: 15px;
+  }
+  .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+  .nav-item,
+  .account-chip,
+  .command-results .nav-item {
+    min-height: 44px;
+    font-size: 16px;
+  }
+  .segmented button,
+  .setting-day {
+    min-height: 40px;
+    padding: 0 14px;
+    font-size: 15px;
+  }
+  .theme-switch button {
+    width: 40px;
+    height: 40px;
+  }
+  .breadcrumbs button {
+    min-height: 44px;
+    padding: 0 8px;
+  }
+  .check {
+    min-height: 44px;
+  }
+  .check input,
+  .source-row input {
+    width: 22px;
+    height: 22px;
+  }
+  .switch {
+    width: 51px;
+    height: 31px;
+  }
+  .switch span::after {
+    width: 27px;
+    height: 27px;
+  }
+  .switch input:checked + span::after {
+    transform: translateX(20px);
+  }
+  .switch input {
+    inset: -7px 0;
+    height: 45px;
+  }
+  .log-row summary {
+    min-height: 44px;
+  }
+  .disclosure > summary {
+    min-height: 44px;
+  }
+}
+
+/* F. Phone layout. */
+@media (max-width: 720px) {
+  .sidebar {
+    height: auto;
+    padding-top: calc(16px + env(safe-area-inset-top));
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+  .row-button {
+    flex-wrap: nowrap;
+  }
+  .row-button .row-value {
+    max-width: 45%;
+  }
+  .row-control .segmented {
+    max-width: 100%;
+  }
+  .workspace {
+    padding-bottom: calc(40px + env(safe-area-inset-bottom));
+  }
+}
+
+/* The file list: header cells follow their columns; dates come back on phones. */
+.file-row.head .size {
+  text-align: right;
+}
+@media (max-width: 900px) {
+  .file-row.head .date,
+  .file-row .meta .date {
+    display: none;
+  }
+}
+@media (max-width: 560px) {
+  .file-row .meta .date {
+    display: inline;
+  }
+  .file-row .meta .size,
+  .file-row .meta .date {
+    text-align: left;
+  }
+}
+
+/* ---------- Shared component additions ---------- */
+.wrap-anywhere {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.group > .notice,
+.group > .loading + .notice {
+  margin: 12px 16px;
+}
+.row:focus-visible,
+.row-button:focus-visible,
+.log-row summary:focus-visible,
+.disclosure > summary:focus-visible {
+  outline-offset: -3px;
+  border-radius: var(--radius);
+}
+.tab-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: 2px;
+}
+.segmented-select {
+  display: none;
+}
+.input-bare {
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+  min-height: 24px;
+  background: transparent;
+}
+.input-bare:focus {
+  box-shadow: none;
+}
+.search-row {
+  flex-wrap: nowrap;
+}
+.input-affix {
+  font-size: 13px;
+  color: var(--label-2);
+  white-space: nowrap;
+}
+.input-group > .amount-input {
+  flex: 0 1 90px;
+  width: 90px;
+  min-width: 64px;
+}
+.input-group > .unit-select,
+.row-control .input-group > .unit-select {
+  width: auto;
+  min-width: 100px;
+  flex: 0 0 auto;
+}
+
+/* Dialog */
+.dialog-body h2 {
+  font-size: 17px;
+}
+.dialog-message {
+  color: var(--label-2);
+  font-size: 13.5px;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 20px calc(16px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--separator);
+}
+@media (max-width: 560px) {
+  .dialog-actions > .btn {
+    flex: 1 1 0;
+  }
+}
+
+/* Technical details: identifiers kept out of the way. */
+.disclosure.technical > summary {
+  padding: 4px 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--label-2);
+}
+.technical-body {
+  font-size: 12px;
+  color: var(--label-2);
+  overflow-wrap: anywhere;
+}
+.disclosure-lead {
+  padding: 0 16px 12px;
+  font-size: 12.5px;
+  color: var(--label-2);
+}
+
+/* Status card */
+.status-progress {
+  display: grid;
+  gap: 6px;
+}
+.status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.status-actions > .btn-plain {
+  margin-left: auto;
+}
+.backup-actions {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.current-file {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+.current-file-label {
+  font-size: 11.5px;
+  color: var(--label-3);
+}
+.current-file-name {
+  color: var(--label);
+  overflow-wrap: anywhere;
+}
+.current-file-folder {
+  color: var(--label-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.pair + .pair {
+  border-top: 6px solid var(--surface-2);
+}
+.pair-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Restore */
+.item-details {
+  background: var(--surface-2);
+}
+.item-details-head,
+.job-head {
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+.item-details-head > strong,
+.job-head > .mono {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.files-toolbar {
+  flex-wrap: wrap;
+}
+.archive-search {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex: 1 1 200px;
+  max-width: 280px;
+}
+@media (max-width: 560px) {
+  .archive-search {
+    max-width: none;
+  }
+}
+
+/* Schedules, days, patterns (shared by Settings and Backup sets) */
+.window-fields {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  justify-items: start;
+}
+.time-range {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.time-range .input,
+.row-control .time-range .input {
+  width: 8.5em;
+}
+.day-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.day-pill {
+  min-width: 46px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--separator-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--label);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.day-pill[aria-pressed='true'] {
+  border-color: var(--accent-fill);
+  background: var(--accent-fill);
+  color: var(--on-accent);
+}
+.day-pill:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.pattern-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.pattern-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.pattern-input {
+  flex: 1 1 200px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.pattern-line .check {
+  font-size: 13px;
+  color: var(--label-2);
+}
+
+/* Save bar: sticks to the bottom while there are unsaved changes. */
+.save-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 10px;
+}
+.save-bar-status {
+  margin-right: auto;
+  font-size: 13px;
+  color: var(--label-2);
+}
+.save-bar-status .saved {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--green);
+}
+.save-bar.is-dirty {
+  position: sticky;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  z-index: 4;
+  padding: 10px 12px;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  box-shadow: var(--shadow-pop);
+}
+
+/* Desktop selects size to their content within limits. */
+@media (min-width: 721px) {
+  .row-control .select {
+    width: auto;
+    min-width: 220px;
+    max-width: 340px;
+  }
+}
+
+/* Drawer footer: appearance on phones. */
+.drawer-theme {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px 4px;
+}
+.drawer-theme .nav-label {
+  padding: 0;
+}
+
+/* Phones: segmented controls fill the width; long ones become a menu. */
+@media (max-width: 560px) {
+  .segmented {
+    display: flex;
+    width: 100%;
+    max-width: 100%;
+  }
+  .segmented button {
+    flex: 1 1 0;
+    min-width: 0;
+    white-space: normal;
+    line-height: 1.2;
+    padding: 6px 8px;
+  }
+  .section-head > .button-row:has(.segmented) {
+    flex: 1 1 100%;
+    margin-left: 0;
+  }
+}
+@media (max-width: 720px) {
+  .drawer-theme.mobile-only {
+    display: flex;
+  }
+  .sidebar {
+    overscroll-behavior: contain;
+  }
+  .topbar {
+    padding-left: calc(16px + env(safe-area-inset-left));
+    padding-right: calc(16px + env(safe-area-inset-right));
+  }
+}
+@media (pointer: coarse) {
+  .day-pill {
+    min-height: 40px;
+    min-width: 44px;
+    font-size: 15px;
+  }
+  .search-trigger {
+    min-height: 44px;
+  }
+  .time-range .input,
+  .row-control .time-range .input {
+    width: 7.25em;
+    min-width: 7.25em;
+  }
+  .segmented-select {
+    font-size: 16px;
+  }
+  .input-bare {
+    min-height: 44px;
+  }
+}
+
+/* Long segmented controls become a menu wherever they would not fit. */
+@container (max-width: 620px) {
+  .segmented.collapsible {
+    display: none;
+  }
+  .segmented-select {
+    display: block;
+  }
+}
+@media (max-width: 560px) {
+  .segmented.collapsible {
+    display: none;
+  }
+  .segmented-select {
+    display: block;
+  }
+}
+@media (pointer: coarse) {
+  .segmented button,
+  .theme-switch button,
+  .day-pill {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .theme-switch button {
+    width: 44px;
+    height: 44px;
+  }
+  .project-notice a {
+    display: inline-block;
+    padding: 15px 0;
+    margin: -15px 0;
+  }
+  .skip-link {
+    min-height: 44px;
+  }
+  .source-row .hit {
+    width: 44px;
+    height: 44px;
+  }
+  .source-name {
+    min-height: 44px;
+  }
+}
+/* A 44 px hit area around a small checkbox. */
+.hit {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: 0 -6px;
+  cursor: pointer;
+}
+
+.file-row .hit input,
+.source-row .hit input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+@media (pointer: coarse) {
+  .file-row .hit {
+    width: 44px;
+    height: 44px;
+    margin: 0 -11px;
+  }
+  .file-row .name {
+    min-height: 44px;
+  }
+  .file-row .hit input,
+  .source-row .hit input {
+    width: 22px;
+    height: 22px;
+  }
+}
+@media (max-width: 560px) {
+  .file-row > .hit {
+    margin: 0;
+  }
 }

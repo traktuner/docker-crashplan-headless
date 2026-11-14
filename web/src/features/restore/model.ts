@@ -1,5 +1,6 @@
 // Restore choices without React, so they can be tested directly.
-import type { Device, RestoreSelection } from '../../shared/api'
+import type { Device, RestoreJob, RestoreJobState, RestoreSelection } from '../../shared/api'
+import { words } from '../../shared/format.ts'
 
 /** Computers whose archives can be restored: this device and the other
  * computers of the account (property OWN), as in the desktop app. Cloud
@@ -46,4 +47,55 @@ export function toggleSelection(
     Object.entries(excluded).filter(([key, item]) => !next[key] && insideSelected(item.path, next)),
   )
   return { selection: next, excluded: keep }
+}
+
+export type JobView = {
+  state: RestoreJobState | 'unknown'
+  label: string
+  tone?: 'blue' | 'green' | 'orange'
+  /** Which single control applies; both only when the engine gives no state. */
+  canStop: boolean
+  canResume: boolean
+  finished: boolean
+  blocked?: string
+}
+
+const blockedReasons: Record<string, string> = {
+  TARGET_NOT_AVAILABLE: 'The backup destination is not available.',
+  DESTINATION_NOT_AVAILABLE: 'The backup destination is not available.',
+  NOT_CONNECTED: 'Waiting for the connection to the backup destination.',
+  ARCHIVE_LOCKED: 'The backup is locked. Unlock it under Security.',
+  INSUFFICIENT_SPACE: 'Not enough free space at the restore location.',
+}
+
+/** What a restore job is doing, from the engine's state or, on older
+ * backends, from its completed/canceled flags. */
+export function restoreJobView(job: RestoreJob): JobView {
+  const known = ['running', 'waiting', 'stopped', 'completed', 'canceled'] as const
+  const state: JobView['state'] =
+    job.state && (known as readonly string[]).includes(job.state)
+      ? job.state
+      : job.completed
+        ? 'completed'
+        : job.canceled
+          ? 'canceled'
+          : 'unknown'
+  const admissible = job.admissible !== false
+  const blocked = job.blockedReason
+    ? (blockedReasons[job.blockedReason] ?? words(job.blockedReason) + '.')
+    : undefined
+  switch (state) {
+    case 'running':
+      return { state, label: 'Running', tone: 'blue', canStop: true, canResume: false, finished: false, blocked }
+    case 'waiting':
+      return { state, label: 'Waiting', tone: 'orange', canStop: true, canResume: false, finished: false, blocked }
+    case 'stopped':
+      return { state, label: 'Stopped', canStop: false, canResume: admissible, finished: false, blocked }
+    case 'completed':
+      return { state, label: 'Completed', tone: 'green', canStop: false, canResume: false, finished: true }
+    case 'canceled':
+      return { state, label: 'Canceled', canStop: false, canResume: false, finished: true }
+    default:
+      return { state, label: 'In progress', tone: 'blue', canStop: true, canResume: admissible, finished: false, blocked }
+  }
 }

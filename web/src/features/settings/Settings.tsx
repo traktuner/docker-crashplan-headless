@@ -1,8 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { isLosslessNumber } from 'lossless-json'
-import { CheckCircle2 } from 'lucide-react'
 import { api } from '../../shared/api'
 import type { Setting, SettingsArea } from '../../shared/api'
 import {
@@ -17,6 +16,8 @@ import {
 } from '../../shared/components'
 import { joinDuration, splitDuration } from '../../shared/format'
 import type { DurationUnit } from '../../shared/format'
+import { DurationFields, PatternList, SaveBar, WindowFields } from '../../shared/controls'
+import { runWindow, windowProblem as runWindowProblem } from '../backup/presentation'
 import './settings.css'
 
 type Change = (value: unknown) => void
@@ -28,16 +29,6 @@ type WindowValue = {
   days: string[]
 }
 type PatternValue = { pattern: string; regularExpression: boolean }
-
-const days = [
-  { id: 'MONDAY', label: 'Mon' },
-  { id: 'TUESDAY', label: 'Tue' },
-  { id: 'WEDNESDAY', label: 'Wed' },
-  { id: 'THURSDAY', label: 'Thu' },
-  { id: 'FRIDAY', label: 'Fri' },
-  { id: 'SATURDAY', label: 'Sat' },
-  { id: 'SUNDAY', label: 'Sun' },
-]
 
 const enumOptions: Record<string, { value: string; label: string }[]> = {
   compression: [
@@ -120,12 +111,7 @@ export function sameSetting(field: Setting, a: unknown, b: unknown): boolean {
 }
 
 function windowProblem(value: unknown): string | undefined {
-  const window = value as WindowValue | null | undefined
-  if (!window || window.alwaysRun) return undefined
-  if (!window.startTimeOfDay || !window.endTimeOfDay)
-    return 'Choose a start and an end time.'
-  if (!window.days?.length) return 'Choose at least one day.'
-  return undefined
+  return value ? runWindowProblem(runWindow(value)) : undefined
 }
 function patternProblem(value: unknown): string | undefined {
   const patterns = (value ?? []) as PatternValue[]
@@ -186,7 +172,11 @@ function ControlShell({
   return (
     <div className="setting-control">
       {children}
-      {error && <div className="setting-error">{error}</div>}
+      {error && (
+        <div className="setting-error" role="alert">
+          {error}
+        </div>
+      )}
     </div>
   )
 }
@@ -201,11 +191,6 @@ type ControlProps = {
 }
 
 // ---------- controls ----------
-
-function unitLabel(unit: DurationUnit, amount: string) {
-  const singular = amount.trim() === '1'
-  return { seconds: 'second', minutes: 'minute', hours: 'hour', days: 'day' }[unit] + (singular ? '' : 's')
-}
 
 function DurationControl({
   field,
@@ -238,33 +223,16 @@ function DurationControl({
   }
   return (
     <ControlShell error={editor.error}>
-      <div className="setting-inline">
-        {prefix && <span className="setting-suffix">{prefix}</span>}
-        <input
-          className="input setting-number"
-          inputMode="decimal"
-          aria-label={field.label}
-          aria-invalid={editor.error ? true : undefined}
-          value={amount}
-          disabled={disabled}
-          onChange={(e) => update({ amount: e.target.value, unit })}
-        />
-        <select
-          className="select setting-unit"
-          aria-label={field.label + ' unit'}
-          value={unit}
-          disabled={disabled}
-          onChange={(e) =>
-            update({ amount, unit: e.target.value as DurationUnit })
-          }
-        >
-          {units.map((u) => (
-            <option key={u} value={u}>
-              {unitLabel(u, amount)}
-            </option>
-          ))}
-        </select>
-      </div>
+      <DurationFields
+        amount={amount}
+        unit={unit}
+        units={units}
+        label={field.label}
+        prefix={prefix}
+        invalid={!!editor.error}
+        disabled={disabled}
+        onChange={update}
+      />
     </ControlShell>
   )
 }
@@ -540,90 +508,10 @@ function WindowControl({
   change: Change
   label: string
 }) {
-  const window = (value ?? {
-    alwaysRun: true,
-    startTimeOfDay: '00:00',
-    endTimeOfDay: '23:59',
-    days: days.map((d) => d.id),
-  }) as WindowValue
-  const selected = window.days ?? []
   return (
-    <ControlShell error={windowProblem(window)}>
-      <div className="setting-window">
-        <div className="setting-inline">
-          <span className="setting-switch-label">
-            Any time
-            <Switch
-              label={label + ': any time'}
-              checked={window.alwaysRun}
-              disabled={disabled}
-              onChange={(on) =>
-                change({
-                  ...window,
-                  alwaysRun: on,
-                  startTimeOfDay: window.startTimeOfDay || '00:00',
-                  endTimeOfDay: window.endTimeOfDay || '23:59',
-                })
-              }
-            />
-          </span>
-        </div>
-        {!window.alwaysRun && (
-          <>
-            <div className="setting-inline">
-              <span className="setting-suffix">From</span>
-              <input
-                className="input"
-                type="time"
-                aria-label={label + ': from'}
-                value={window.startTimeOfDay ?? ''}
-                disabled={disabled}
-                onChange={(e) =>
-                  change({ ...window, startTimeOfDay: e.target.value })
-                }
-              />
-              <span className="setting-suffix">to</span>
-              <input
-                className="input"
-                type="time"
-                aria-label={label + ': until'}
-                value={window.endTimeOfDay ?? ''}
-                disabled={disabled}
-                onChange={(e) =>
-                  change({ ...window, endTimeOfDay: e.target.value })
-                }
-              />
-            </div>
-            <div className="setting-days" role="group" aria-label={label + ': days'}>
-              {days.map((day) => {
-                const on = selected.includes(day.id)
-                return (
-                  <button
-                    type="button"
-                    className="setting-day"
-                    key={day.id}
-                    aria-pressed={on}
-                    disabled={disabled}
-                    onClick={() =>
-                      change({
-                        ...window,
-                        days: on
-                          ? selected.filter((d) => d !== day.id)
-                          : days
-                              .map((d) => d.id)
-                              .filter((d) => d === day.id || selected.includes(d)),
-                      })
-                    }
-                  >
-                    {day.label}
-                  </button>
-                )
-              })}
-            </div>
-          </>
-        )}
-      </div>
-    </ControlShell>
+    <div className="setting-control">
+      <WindowFields value={runWindow(value)} disabled={disabled} label={label} change={change} />
+    </div>
   )
 }
 
@@ -639,68 +527,9 @@ export function PatternControl({
 }) {
   const patterns = (value ?? []) as PatternValue[]
   return (
-    <ControlShell error={patternProblem(patterns)}>
-      <div className="setting-patterns">
-        {patterns.length === 0 && (
-          <div className="setting-patterns-empty">No patterns.</div>
-        )}
-        {patterns.map((pattern, index) => (
-          <div className="setting-pattern" key={index}>
-            <input
-              className="input"
-              aria-label={`Pattern ${index + 1}`}
-              spellCheck={false}
-              value={pattern.pattern}
-              disabled={disabled}
-              onChange={(e) =>
-                change(
-                  patterns.map((p, i) =>
-                    i === index ? { ...p, pattern: e.target.value } : p,
-                  ),
-                )
-              }
-            />
-            <label className="check">
-              <input
-                type="checkbox"
-                disabled={disabled}
-                checked={pattern.regularExpression}
-                onChange={(e) =>
-                  change(
-                    patterns.map((p, i) =>
-                      i === index
-                        ? { ...p, regularExpression: e.target.checked }
-                        : p,
-                    ),
-                  )
-                }
-              />
-              Regular expression
-            </label>
-            <button
-              type="button"
-              className="btn btn-plain btn-sm"
-              disabled={disabled}
-              onClick={() => change(patterns.filter((_, i) => i !== index))}
-            >
-              Remove
-            </button>
-          </div>
-        ))}
-        <div>
-          <button
-            type="button"
-            className="btn btn-sm"
-            disabled={disabled}
-            onClick={() =>
-              change([...patterns, { pattern: '', regularExpression: false }])
-            }
-          >
-            Add pattern
-          </button>
-        </div>
-      </div>
-    </ControlShell>
+    <div className="setting-control">
+      <PatternList patterns={patterns} disabled={disabled} showProblems change={change} />
+    </div>
   )
 }
 
@@ -1026,7 +855,13 @@ function SettingRow({
   )
 }
 
-function SettingsPane({ pane }: { pane: Pane }) {
+function SettingsPane({
+  pane,
+  onDirty,
+}: {
+  pane: Pane
+  onDirty: (dirty: boolean) => void
+}) {
   const client = useQueryClient()
   const settings = useQuery({
     queryKey: ['settings', pane.area],
@@ -1094,6 +929,7 @@ function SettingsPane({ pane }: { pane: Pane }) {
   )
   const dirty = Object.keys(changes).length > 0
   const edited = Object.keys(draft).length > 0 || problems.length > 0
+  useEffect(() => onDirty(dirty), [dirty]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const failed =
     save.data && !save.data.complete
@@ -1166,35 +1002,18 @@ function SettingsPane({ pane }: { pane: Pane }) {
           CrashPlan did not confirm every change. Check the values shown.
         </Notice>
       )}
-      <div className="settings-actions">
-        {problems.length > 0 ? (
-          <span className="settings-pending">
-            Correct the marked {problems.length === 1 ? 'setting' : 'settings'} to
-            save.
-          </span>
-        ) : save.isPending ? (
-          <span className="settings-pending">Saving…</span>
-        ) : save.data?.complete && !dirty ? (
-          <span className="settings-saved" role="status">
-            <CheckCircle2 size={14} aria-hidden="true" /> Saved
-          </span>
-        ) : null}
-        <button
-          type="button"
-          className="btn btn-plain"
-          disabled={!edited || save.isPending}
-          onClick={revert}
-        >
-          Revert
-        </button>
-        <button
-          type="submit"
-          className="btn btn-primary"
-          disabled={!dirty || problems.length > 0 || save.isPending}
-        >
-          Save
-        </button>
-      </div>
+      <SaveBar
+        dirty={dirty || problems.length > 0}
+        busy={save.isPending}
+        blocked={
+          problems.length > 0
+            ? `Correct the marked ${problems.length === 1 ? 'setting' : 'settings'} to save.`
+            : undefined
+        }
+        saved={save.data?.complete}
+        canRevert={edited}
+        onRevert={revert}
+      />
     </form>
   )
 }
@@ -1202,6 +1021,7 @@ function SettingsPane({ pane }: { pane: Pane }) {
 export function Settings() {
   const [paneId, setPaneId] = useState('backup')
   const [visited, setVisited] = useState<string[]>(['backup'])
+  const [dirty, setDirty] = useState<string[]>([])
   return (
     <Page
       title="Settings"
@@ -1209,8 +1029,10 @@ export function Settings() {
     >
       <div className="settings-tabs">
         <Segmented
+          tabs
           label="Settings category"
           value={paneId}
+          marked={dirty}
           options={panes.map((p) => ({ value: p.id, label: p.title }))}
           onChange={(id) => {
             setPaneId(id)
@@ -1221,8 +1043,15 @@ export function Settings() {
       {panes
         .filter((p) => visited.includes(p.id))
         .map((p) => (
-          <div key={p.id} hidden={p.id !== paneId}>
-            <SettingsPane pane={p} />
+          <div key={p.id} hidden={p.id !== paneId} role="tabpanel" aria-label={p.title}>
+            <SettingsPane
+              pane={p}
+              onDirty={(on) =>
+                setDirty((old) =>
+                  on ? (old.includes(p.id) ? old : [...old, p.id]) : old.filter((id) => id !== p.id),
+                )
+              }
+            />
           </div>
         ))}
     </Page>

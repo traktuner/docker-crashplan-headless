@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"github.com/coder/websocket"
 	"github.com/traktuner/crashplan-headless/internal/engine"
 	"github.com/traktuner/crashplan-headless/internal/statefile"
@@ -196,5 +197,120 @@ func TestRestoreHelperHooksOwnTheSameGenerationAndWakeAfterLogin(t *testing.T) {
 	}
 	if err := owner.End(1); err != nil || !helpers.ended {
 		t.Fatal("restore helpers ended after native event bus", err)
+	}
+}
+
+// Audit M4: an operation whose waiter leaves before the worker starts it is
+// dropped, never run later, and its waiter learns it was not dispatched.
+func TestQueuedOperationIsDroppedWhenItsWaiterLeaves(t *testing.T) {
+	server := httptest.NewTLSServer(http.NotFoundHandler())
+	defer server.Close()
+	native, _ := engine.NewClient(server.URL, server.Client(), time.Second)
+	owner := New(Options{Native: native, MonitorInterval: time.Hour})
+	if err := owner.Begin(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	defer owner.End(1)
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	first := make(chan error, 1)
+	go func() {
+		first <- owner.Do(context.Background(), func(context.Context) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	var ran atomic.Bool
+	wait, cancel := context.WithCancel(context.Background())
+	second := make(chan error, 1)
+	go func() {
+		second <- owner.Do(wait, func(context.Context) error { ran.Store(true); return nil })
+	}()
+	time.Sleep(20 * time.Millisecond) // queued behind the first operation
+	cancel()
+	if err := <-second; !errors.Is(err, engine.ErrNotDispatched) {
+		t.Fatal("abandoned queued operation not reported as not dispatched", err)
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	// A later operation proves the worker moved past the dropped one.
+	if err := owner.Do(context.Background(), func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if ran.Load() {
+		t.Fatal("operation ran after its waiter left")
+	}
+}
+
+// Audit M3: a transient session-restore failure is retried with backoff.
+func TestTransientSessionRestoreFailureIsRetried(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/ApplicationStatus":
+			io.WriteString(w, `{"productVersion":"12.1.1","buildNumber":"2"}`)
+		case "/v1/AuthToken":
+			if attempts.Add(1) <= 2 {
+				w.WriteHeader(503)
+				return
+			}
+			io.WriteString(w, `{"valid":true}`)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer server.Close()
+	native, _ := engine.NewClient(server.URL, server.Client(), time.Second)
+	store, _ := statefile.Open(filepath.Join(t.TempDir(), "state"))
+	defer store.Close()
+	store.Write("native-session", []byte("saved-token"))
+	native.UseSessionStore(store)
+	owner := New(Options{Native: native, MonitorInterval: 5 * time.Millisecond, RestoreRetry: 20 * time.Millisecond})
+	owner.Begin(context.Background(), 1)
+	defer owner.End(1)
+	deadline := time.Now().Add(3 * time.Second)
+	for !native.Authorized() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !native.Authorized() || attempts.Load() < 3 {
+		t.Fatal("transient restore failure not retried", attempts.Load())
+	}
+	time.Sleep(20 * time.Millisecond)
+	if s := owner.Snapshot(); s.SessionRestore != "complete" {
+		t.Fatal("restore state", s.SessionRestore)
+	}
+	raw, _ := store.Read("native-session")
+	if string(raw) != "saved-token" {
+		t.Fatal("saved session changed")
+	}
+}
+
+// Perf 4: the monitor tick notifies browsers only when its state changes.
+func TestMonitorNotifiesOnlyOnChange(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/ApplicationStatus":
+			io.WriteString(w, `{"productVersion":"12.1.1","buildNumber":"2"}`)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer server.Close()
+	native, _ := engine.NewClient(server.URL, server.Client(), time.Second)
+	owner := New(Options{Native: native, MonitorInterval: 5 * time.Millisecond})
+	var notifications atomic.Int32
+	owner.SetNotify(func() { notifications.Add(1) })
+	owner.Begin(context.Background(), 1)
+	time.Sleep(250 * time.Millisecond) // about 50 ticks
+	owner.End(1)
+	if n := notifications.Load(); n == 0 || n > 6 {
+		t.Fatal("monitor notifications not tied to changes", n)
+	}
+	if lanes := owner.Snapshot().Lanes; lanes == nil || len(lanes) != 0 {
+		t.Fatal("stopped owner must report an empty lanes object", lanes)
 	}
 }

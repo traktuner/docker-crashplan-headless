@@ -39,7 +39,7 @@ const messages: Record<string, string> = {
     'The native action was not sent because the connection failed.',
   ARCHIVE_STATISTICS_PENDING: 'A previous archive count is running or unresolved. Request its progress before starting another count.',
   NATIVE_RESPONSE_PENDING:
-    'A previous native response is unresolved. Restart the engine before repeating this operation.',
+    'CrashPlan did not answer an earlier request. Try again in a moment.',
   SOURCE_NOT_READY: 'A configured local source is unavailable.',
   SCAN_ALREADY_PENDING: 'A scan is already pending for this backup set.',
   NATIVE_SESSION_CHANGED:
@@ -280,7 +280,16 @@ export interface RestoreJob {
   restorePath: string
   imported: boolean
   admissible: boolean
+  /** Newer backends; missing means unknown (derive from completed/canceled). */
+  state?: RestoreJobState
+  /** Bytes per second; "0" when unknown. */
+  rateBytesPerSecond?: string
+  /** Milliseconds left; "-1" when unknown. */
+  remainingMs?: string
+  /** Stock reason code why the job cannot run right now. */
+  blockedReason?: string
 }
+export type RestoreJobState = 'running' | 'waiting' | 'stopped' | 'completed' | 'canceled'
 export interface Device {
   archiveType?: 'ARCHIVE_V1' | 'ARCHIVE_V3'
   id: string
@@ -295,6 +304,22 @@ export interface Device {
   owned?: boolean
   /** A CrashPlan cloud server. */
   cloud?: boolean
+  /** Newer backends; missing means unknown. */
+  connected?: boolean
+  disconnectCode?: string
+  usedBytes?: string
+  quotaBytes?: string
+  location?: string
+}
+/** GET /api/v1/account: the signed-in summary (read-only). */
+export interface AccountSummary {
+  username: string
+  server: string
+  deviceName: string
+  deviceGuid: string
+  productVersion: string
+  licenseType?: string
+  licenseExpires?: string
 }
 export interface MigrationDevice {
   computerGuid: string
@@ -376,6 +401,18 @@ export interface SetProgress {
   /** Epoch ms when a paused backup resumes; 0 or past = not paused. */
   resumeTime: string
   sendingPath?: string
+  // Newer backends only. Every one may be missing; missing means unknown.
+  /** Size of the whole selection. */
+  totalFiles?: string
+  totalBytes?: string
+  scheduledBytes?: string
+  inFlightBytes?: string
+  /** Stock completion 0..100, or -1/undefined when unknown. */
+  percent?: number
+  /** Stock CpRule.isBackupComplete. Only `true` means complete. */
+  complete?: boolean
+  checkingForDeletes?: boolean
+  everBackedUp?: boolean
 }
 export interface DestinationProgress {
   targetId: string
@@ -390,6 +427,11 @@ export interface DestinationProgress {
   sets: SetProgress[]
   /** Set when this destination could not be read. */
   error?: string
+  /** Newer backends; missing means unknown. */
+  connected?: boolean
+  disconnectCode?: string
+  /** Epoch ms when a system-wide pause ends; "0" = not paused. */
+  systemResumeTime?: string
 }
 function plain(value: unknown): unknown {
   if (isLosslessNumber(value)) return value.toString()
@@ -400,11 +442,22 @@ function plain(value: unknown): unknown {
     )
   return value
 }
+function optionalPercent(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const n = Number(value)
+  return Number.isFinite(n) && n >= 0 ? Math.min(100, n) : undefined
+}
 export interface BackupControl {
   backupSetId?: string
   planUid?: string
   destinationGuid?: string
+  /** Together with backupSetId: one set at one destination. */
+  destinationId?: string
   durationMinutes?: string
+}
+export interface BackupRun {
+  backupSetId?: string
+  destinationId?: string
 }
 export interface Alert {
   id: string
@@ -413,6 +466,11 @@ export interface Alert {
   message?: string
   flags: number
   expiration: string
+  /** Lower is more important. Missing on older backends. */
+  priority?: number
+  /** Missing on older backends: treat as closable, as before. */
+  closable?: boolean
+  action?: 'resume' | 'retry' | 'reconnect'
 }
 export interface HistoryEntry {
   level: string
@@ -698,7 +756,26 @@ export class API {
         ...d.maintenance,
         percent: Number(d.maintenance.percent),
       },
+      sets: (d.sets ?? []).map((s) => ({
+        ...s,
+        percent: optionalPercent(s.percent),
+        complete: s.complete === true ? true : s.complete === false ? false : undefined,
+      })),
     }))
+  }
+  /** "Back up now" for everything, one set, or one set at one destination. */
+  runBackup(input: BackupRun = {}): Promise<{ accepted: boolean }> {
+    return this.request('/api/v1/backup/run', 'POST', input)
+  }
+  reconnectDestination(id: string): Promise<{ accepted: boolean }> {
+    return this.request(
+      '/api/v1/destinations/' + encodeURIComponent(identifier(id)) + '/reconnect',
+      'POST',
+      {},
+    )
+  }
+  account(): Promise<AccountSummary> {
+    return this.request('/api/v1/account')
   }
   backupControl(
     action: 'pause' | 'resume',
@@ -706,14 +783,22 @@ export class API {
   ): Promise<{ accepted: boolean; backupSetIds: string[] }> {
     return this.request('/api/v1/backup/' + action, 'POST', input)
   }
-  alerts(): Promise<Alert[]> {
-    return this.request('/api/v1/alerts')
+  async alerts(): Promise<Alert[]> {
+    const raw = plain(await this.request('/api/v1/alerts')) as Alert[]
+    return raw.map((a) => ({
+      ...a,
+      flags: Number(a.flags) || 0,
+      priority: a.priority === undefined ? undefined : Number(a.priority),
+    }))
   }
   dismissAlert(id: string): Promise<{ removed: boolean }> {
     return this.request('/api/v1/alerts/dismiss', 'POST', { id })
   }
-  history(): Promise<HistoryEntry[]> {
-    return this.request('/api/v1/history')
+  /** The newest `limit` entries (oldest first), or the whole log. */
+  history(limit?: number): Promise<HistoryEntry[]> {
+    return this.request(
+      '/api/v1/history' + (limit ? '?limit=' + Math.trunc(limit) : ''),
+    )
   }
   unlockArchive(input: ArchiveUnlock): Promise<{ unlocked: boolean }> {
     return this.request('/api/v1/security/unlock', 'POST', input)
@@ -903,6 +988,10 @@ export class API {
   }
   restoreJobs(): Promise<RestoreJob[]> {
     return this.request('/api/v1/restore/jobs')
+  }
+  /** `incomplete` names the error when some completed restores stayed listed. */
+  clearCompletedRestores(): Promise<{ removed: number; incomplete?: string }> {
+    return this.request('/api/v1/restore/jobs/clear-completed', 'POST', {})
   }
   restoreOperations(): Promise<RestoreOperation[]> {
     return this.request('/api/v1/restore/operations')

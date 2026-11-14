@@ -3,9 +3,9 @@ import { ChevronRight, FolderClosed, History } from 'lucide-react'
 import { api } from '../../shared/api'
 import { ErrorNotice, Loading, Page, Section } from '../../shared/components'
 import { StatusCard, useBackupStatus } from '../../shared/StatusCard'
-import { completion, lastBackup } from '../../shared/backupStatus'
-import { bytes, compactCount, dateTime, plural, relative } from '../../shared/format'
-import { eventLevel } from '../activity/events'
+import { lastBackup, pairStatus, progressText, shortLabel } from '../../shared/backupStatus'
+import { dateTime, percent, plural, relative } from '../../shared/format'
+import { eventKeys, eventLevel } from '../activity/events'
 import type { Page as PageId } from '../../app/navigation'
 
 const health = {
@@ -40,8 +40,8 @@ export function Overview({
     enabled: ready,
   })
   const history = useQuery({
-    queryKey: ['history'],
-    queryFn: () => api.history(),
+    queryKey: ['history', 5],
+    queryFn: () => api.history(5),
     enabled: ready,
     refetchInterval: 60_000,
   })
@@ -49,13 +49,16 @@ export function Overview({
   const syncing = status.kind === 'sync' || status.kind === 'checking'
   const name = (id: string) =>
     devices.data?.find((d) => String(d.id) === String(id))?.name || 'Destination'
-  const recent = (history.data ?? []).slice(-5).toReversed()
+  const newest = (history.data ?? []).slice(-5)
+  const keys = eventKeys(newest).toReversed()
+  const recent = newest.toReversed()
 
   return (
     <Page title="Overview" subtitle="What CrashPlan is doing right now.">
       <ErrorNotice error={progress.error} />
       <StatusCard
         status={status}
+        controls={ready}
         footer={
           ready && (
             <>
@@ -80,11 +83,9 @@ export function Overview({
         }
       >
         {ready && (
-          <div className="button-row">
-            <button className="btn btn-sm" onClick={() => navigate('activity')}>
-              Show details
-            </button>
-          </div>
+          <button className="btn btn-plain" onClick={() => navigate('activity')}>
+            Show details
+          </button>
         )}
       </StatusCard>
 
@@ -119,11 +120,27 @@ export function Overview({
                 const id = String(set.id)
                 const setName = String(set.fields.find((f) => f.name === 'name')?.value ?? 'Backup set')
                 const folders = set.paths.filter((p) => p.selected).length
-                const perDestination = progress.data?.flatMap((d) =>
-                  d.sets.filter((s) => s.backupSetId === id).map((s) => ({ d, s })),
-                )
-                const first = perDestination?.[0]
-                const done = first ? completion(first.s) : undefined
+                const perDestination =
+                  progress.data?.flatMap((d) =>
+                    d.error ? [] : d.sets.filter((s) => s.backupSetId === id).map((s) => ({ d, s })),
+                  ) ?? []
+                // One short value per set; the longer explanation goes below the name.
+                const states = perDestination.map(({ d, s }) => ({ d, s, state: pairStatus(d, s) }))
+                const worst = states.find(({ state }) => state.tone === 'bad' || state.tone === 'warn') ?? states.find(({ state }) => state.kind !== 'complete') ?? states[0]
+                const allComplete = states.length > 0 && states.every(({ state }) => state.kind === 'complete')
+                const value = syncing || !worst
+                  ? ''
+                  : allComplete
+                    ? 'Complete'
+                    : worst.state.kind === 'backup' || worst.state.kind === 'waiting' || worst.state.kind === 'unconfirmed'
+                      ? (percent(worst.s.percent) ?? shortLabel[worst.state.kind])
+                      : shortLabel[worst.state.kind]
+                const detail =
+                  syncing || !worst || allComplete
+                    ? undefined
+                    : worst.state.kind === 'backup' || worst.state.kind === 'waiting'
+                      ? progressText(worst.s)
+                      : `${worst.state.title} · ${worst.d.name || 'Destination'}`
                 return (
                   <button key={id} className="row row-button" onClick={() => navigate('sets')}>
                     <span className="row-icon">
@@ -135,16 +152,9 @@ export function Overview({
                         {plural(folders, 'folder')} ·{' '}
                         {set.destinations.map((d) => name(String(d.id))).join(', ') || 'No destination'}
                       </span>
+                      {detail && <span className="row-detail">{detail}</span>}
                     </span>
-                    <span className="row-value">
-                      {first && !syncing
-                        ? BigInt(first.s.remainingFiles || '0') > 0n
-                          ? `${compactCount(first.s.remainingFiles)} files · ${bytes(first.s.remainingBytes)} to do`
-                          : done !== undefined
-                            ? 'Up to date'
-                            : ''
-                        : ''}
-                    </span>
+                    {value && <span className="row-value">{value}</span>}
                     <ChevronRight size={16} className="row-chevron" />
                   </button>
                 )
@@ -173,8 +183,9 @@ export function Overview({
             recent.map((entry, index) => {
               const level = eventLevel(entry.level)
               return (
-                <div className="row" key={entry.timestamp + ':' + index}>
-                  <span className={'dot ' + level.dot} aria-label={level.label} />
+                <div className="row" key={keys[index]}>
+                  <span className={'dot ' + level.dot} aria-hidden="true" />
+                  <span className="visually-hidden">{level.label}:</span>
                   <div className="row-main">
                     <div className="row-title truncate" title={entry.message}>
                       {entry.message}

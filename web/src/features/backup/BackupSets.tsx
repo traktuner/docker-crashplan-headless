@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
@@ -15,8 +15,10 @@ import {
   Section,
   Segmented,
   Switch,
+  useConfirm,
 } from '../../shared/components'
-import { baseName, count, dateTime, plural, relative, words } from '../../shared/format'
+import { SaveBar } from '../../shared/controls'
+import { baseName, bytes, count, dateTime, plural, relative, words } from '../../shared/format'
 import { LocalArchives } from '../destinations/LocalArchives'
 import { ByteInput, DurationInput, InlineError, PatternRows, WindowRows } from './controls'
 import type { Pattern } from './controls'
@@ -80,16 +82,6 @@ function Result({ result }: { result: SetResult | undefined }) {
   )
 }
 
-/** Footer row with the section's one primary action. */
-function ActionRow({ children, status }: { children: ReactNode; status?: ReactNode }) {
-  return (
-    <div className="row">
-      <div className="row-main">{status}</div>
-      <div className="button-row">{children}</div>
-    </div>
-  )
-}
-
 // ---------- Settings (schedule, full scan, data handling) ----------
 
 type Draft = Record<string, unknown>
@@ -107,7 +99,7 @@ function FieldRow({
   problem?: string
   change: (value: unknown, problem?: string) => void
 }) {
-  const lockedDetail = field.locked ? 'Locked by policy' : undefined
+  const lockedDetail = field.locked ? 'Managed by your organization' : undefined
   const row = (title: string, control: ReactNode, detail?: string) => (
     <div className="row">
       <div className="row-main">
@@ -273,7 +265,15 @@ const settingGroups: { title: string; description?: string; names: string[] }[] 
   },
 ]
 
-function SettingsEditor({ set, changed }: { set: BackupSet; changed: (result: SetResult) => void }) {
+function SettingsEditor({
+  set,
+  changed,
+  onDirty,
+}: {
+  set: BackupSet
+  changed: (result: SetResult) => void
+  onDirty: (dirty: boolean) => void
+}) {
   const [draft, setDraft] = useState<Draft>({})
   const [problems, setProblems] = useState<Record<string, string>>({})
   const [generation, setGeneration] = useState(0)
@@ -312,6 +312,7 @@ function SettingsEditor({ set, changed }: { set: BackupSet; changed: (result: Se
   ]
   const hasProblems = Object.keys(problems).length > 0
   const dirty = Object.keys(draft).length > 0
+  useEffect(() => onDirty(dirty), [dirty]) // eslint-disable-line react-hooks/exhaustive-deps
   const renderRow = (field: Setting) => (
     <FieldRow
       key={field.name + ':' + generation}
@@ -358,14 +359,14 @@ function SettingsEditor({ set, changed }: { set: BackupSet; changed: (result: Se
       <ErrorNotice error={save.error} />
       {tried && hasProblems && <Notice tone="error">Correct the highlighted values first.</Notice>}
       <Result result={save.data} />
-      <div className="button-row end">
-        <button type="button" className="btn" disabled={!dirty || busy} onClick={reset}>
-          Revert
-        </button>
-        <button type="submit" className="btn btn-primary" disabled={!dirty || busy}>
-          {busy ? 'Saving…' : 'Save changes'}
-        </button>
-      </div>
+      <SaveBar
+        dirty={dirty}
+        busy={busy}
+        blocked={hasProblems ? 'Correct the highlighted values first.' : undefined}
+        saved={save.data?.complete}
+        saveLabel="Save changes"
+        onRevert={reset}
+      />
     </form>
   )
 }
@@ -384,7 +385,15 @@ function crumbs(path: string) {
   return out
 }
 
-function SourceSelection({ set, changed }: { set: BackupSet; changed: (result: SetResult) => void }) {
+function SourceSelection({
+  set,
+  changed,
+  onDirty,
+}: {
+  set: BackupSet
+  changed: (result: SetResult) => void
+  onDirty: (dirty: boolean) => void
+}) {
   const [parent, setParent] = useState('')
   const [offset, setOffset] = useState(0)
   const [draft, setDraft] = useState<Record<string, SelectionPath>>({})
@@ -405,7 +414,8 @@ function SourceSelection({ set, changed }: { set: BackupSet; changed: (result: S
   const virtual = useVirtualizer({
     count: items.length,
     getScrollElement: () => scroll.current,
-    estimateSize: () => 40,
+    // Taller rows on touch screens keep every row a comfortable target.
+    estimateSize: () => (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 48 : 40),
     overscan: 8,
   })
   function navigate(path: string) {
@@ -415,6 +425,7 @@ function SourceSelection({ set, changed }: { set: BackupSet; changed: (result: S
   }
   const changes = Object.keys(draft).length
   const explicit = set.paths ?? []
+  useEffect(() => onDirty(changes > 0), [changes > 0]) // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="set-editor">
       <Section
@@ -467,6 +478,7 @@ function SourceSelection({ set, changed }: { set: BackupSet; changed: (result: S
                     key={item.path}
                     style={{ height: row.size, transform: `translateY(${row.start}px)` }}
                   >
+                    <label className="hit">
                     <input
                       aria-label={'Back up ' + item.path}
                       type="checkbox"
@@ -483,6 +495,7 @@ function SourceSelection({ set, changed }: { set: BackupSet; changed: (result: S
                         }))
                       }
                     />
+                    </label>
                     {item.directory ? (
                       <Folder size={16} className="folder-icon" aria-hidden="true" />
                     ) : (
@@ -548,35 +561,18 @@ function SourceSelection({ set, changed }: { set: BackupSet; changed: (result: S
             </div>
           </div>
         )}
-        <ActionRow
-          status={
-            <span className="row-detail">
-              {set.pathsLocked
-                ? 'The file selection is locked by policy.'
-                : changes
-                  ? plural(changes, 'unsaved change')
-                  : 'No unsaved changes'}
-            </span>
-          }
-        >
-          <button
-            type="button"
-            className="btn"
-            disabled={changes === 0 || save.isPending}
-            onClick={() => setDraft({})}
-          >
-            Discard
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={save.isPending || changes === 0 || set.pathsLocked}
-            onClick={() => save.mutate()}
-          >
-            {save.isPending ? 'Saving…' : 'Save selection'}
-          </button>
-        </ActionRow>
       </Section>
+      <SaveBar
+        dirty={changes > 0}
+        busy={save.isPending}
+        blocked={set.pathsLocked ? 'The file selection is managed by your organization.' : undefined}
+        status={changes ? plural(changes, 'unsaved change') : undefined}
+        saved={save.data?.complete}
+        saveLabel="Save selection"
+        revertLabel="Discard"
+        onRevert={() => setDraft({})}
+        onSave={() => save.mutate()}
+      />
       <ErrorNotice error={save.error} />
       <Result result={save.data} />
       {explicit.length > 0 && (
@@ -596,8 +592,18 @@ function SourceSelection({ set, changed }: { set: BackupSet; changed: (result: S
 
 // ---------- Exclusions ----------
 
-function Excludes({ set, changed }: { set: BackupSet; changed: (result: SetResult) => void }) {
+function Excludes({
+  set,
+  changed,
+  onDirty,
+}: {
+  set: BackupSet
+  changed: (result: SetResult) => void
+  onDirty: (dirty: boolean) => void
+}) {
   const [patterns, setPatterns] = useState<Pattern[]>(set.excludes ?? [])
+  const dirty = JSON.stringify(patterns) !== JSON.stringify(set.excludes ?? [])
+  useEffect(() => onDirty(dirty), [dirty]) // eslint-disable-line react-hooks/exhaustive-deps
   const [tried, setTried] = useState(false)
   const save = useMutation({
     mutationFn: () => api.setExcludes(set.id, patterns),
@@ -620,18 +626,26 @@ function Excludes({ set, changed }: { set: BackupSet; changed: (result: SetResul
         description="Files matching these patterns are skipped, in addition to the system exclusions. Regular expressions use Java syntax."
       >
         <PatternRows patterns={patterns} disabled={disabled} showProblems={tried} change={setPatterns} />
-        <ActionRow
-          status={
-            set.excludesLocked ? <span className="row-detail">Locked by policy.</span> : undefined
-          }
-        >
-          <button type="submit" className="btn btn-primary" disabled={disabled}>
-            {save.isPending ? 'Saving…' : 'Save exclusions'}
-          </button>
-        </ActionRow>
       </Section>
       <ErrorNotice error={save.error} />
       <Result result={save.data} />
+      <SaveBar
+        dirty={dirty}
+        busy={save.isPending}
+        blocked={
+          set.excludesLocked
+            ? 'Exclusions are managed by your organization.'
+            : tried && invalid
+              ? 'Enter a pattern in every line or remove it.'
+              : undefined
+        }
+        saved={save.data?.complete}
+        saveLabel="Save exclusions"
+        onRevert={() => {
+          setPatterns(set.excludes ?? [])
+          setTried(false)
+        }}
+      />
     </form>
   )
 }
@@ -640,6 +654,7 @@ function Excludes({ set, changed }: { set: BackupSet; changed: (result: SetResul
 
 function Destinations({ set, changed }: { set: BackupSet; changed: (result: SetResult) => void }) {
   const { devices } = useDeviceName()
+  const [confirmDialog, ask] = useConfirm()
   const save = useMutation({
     mutationFn: ({ id, attached }: { id: string; attached: boolean }) =>
       api.setBackupDestination(set.id, id, attached),
@@ -652,6 +667,7 @@ function Destinations({ set, changed }: { set: BackupSet; changed: (result: SetR
     ) ?? []
   return (
     <div className="set-editor">
+      {confirmDialog}
       <Section
         title="Destinations"
         description="Where this backup set is stored. Turning a destination off stops future backups to it."
@@ -669,27 +685,36 @@ function Destinations({ set, changed }: { set: BackupSet; changed: (result: SetR
           const current = set.destinations?.find((d) => String(d.id) === String(device.id))
           const locked = set.destinationsLocked || !!current?.locked
           const detail = [
+            device.connected === true ? 'Connected' : device.connected === false ? 'Not connected' : undefined,
+            device.usedBytes
+              ? device.quotaBytes && device.quotaBytes !== '0'
+                ? `${bytes(device.usedBytes)} of ${bytes(device.quotaBytes)} used`
+                : `${bytes(device.usedBytes)} used`
+              : undefined,
             device.blocked ? 'Blocked' : undefined,
-            locked ? 'Locked by policy' : undefined,
+            locked ? 'Managed by your organization' : undefined,
           ]
             .filter(Boolean)
             .join(' · ')
           return (
             <Row
               key={String(device.id)}
-              title={<span title={'Destination ID ' + device.id}>{device.name || 'Unnamed destination'}</span>}
+              title={device.name || 'Unnamed destination'}
               detail={detail || undefined}
             >
               <Switch
                 label={'Back up to ' + (device.name || 'this destination')}
                 checked={!!current}
                 disabled={locked || save.isPending}
-                onChange={(attached) => {
+                onChange={async (attached) => {
                   if (
                     !attached &&
-                    !confirm(
-                      `Stop backing up "${backupSetName(set)}" to ${device.name || 'this destination'}? This changes where future backups are sent.`,
-                    )
+                    !(await ask({
+                      title: `Stop backing up to ${device.name || 'this destination'}?`,
+                      message: `“${backupSetName(set)}” is no longer sent there. Backups already stored stay until your retention settings remove them.`,
+                      confirm: 'Stop backing up',
+                      destructive: true,
+                    }))
                   )
                     return
                   save.mutate({ id: String(device.id), attached })
@@ -732,15 +757,17 @@ function Retention({ set }: { set: BackupSet }) {
 
 function DeleteSet({ set, remove }: { set: BackupSet; remove: ReturnType<typeof useRemove> }) {
   const isDefault = String(set.id) === '1'
+  const [confirmDialog, ask] = useConfirm()
   return (
     <Section title="Delete backup set">
+      {confirmDialog}
       <Row
         title="Delete this backup set"
         detail={
           isDefault
             ? 'The default backup set cannot be deleted.'
             : set.locked
-              ? 'Locked by policy.'
+              ? 'Managed by your organization.'
               : 'Its file selection and settings are removed. Stored backup history can be affected.'
         }
       >
@@ -748,11 +775,14 @@ function DeleteSet({ set, remove }: { set: BackupSet; remove: ReturnType<typeof 
           type="button"
           className="btn btn-destructive"
           disabled={isDefault || set.locked || remove.isPending}
-          onClick={() => {
+          onClick={async () => {
             if (
-              confirm(
-                `Delete the backup set "${backupSetName(set)}"? This changes the backup configuration and can affect its stored backup history.`,
-              )
+              await ask({
+                title: `Delete “${backupSetName(set)}”?`,
+                message: 'Its file selection and settings are removed. This can affect its stored backup history.',
+                confirm: 'Delete',
+                destructive: true,
+              })
             )
               remove.mutate(set.id)
           }}
@@ -797,7 +827,10 @@ function ScanRow({
   const state = scanStates[scan.state] ?? { label: words(scan.state) }
   const at = epoch(scan.updated)
   const unresolved = unresolvedScanStates.includes(scan.state)
+  const [confirmDialog, ask] = useConfirm()
   return (
+    <>
+    {confirmDialog}
     <Row
       title="Last full scan"
       detail={
@@ -819,14 +852,22 @@ function ScanRow({
           type="button"
           className="btn btn-sm"
           disabled={acknowledging}
-          onClick={() => {
-            if (confirm('Acknowledge this unresolved scan? No new scan will be sent.')) acknowledge()
+          onClick={async () => {
+            if (
+              await ask({
+                title: 'Acknowledge this scan?',
+                message: 'CrashPlan never confirmed how it ended. Acknowledging it allows a new full scan; no scan is sent now.',
+                confirm: 'Acknowledge',
+              })
+            )
+              acknowledge()
           }}
         >
           Acknowledge
         </button>
       )}
     </Row>
+    </>
   )
 }
 
@@ -834,6 +875,17 @@ export function BackupSets() {
   const client = useQueryClient()
   const [open, setOpen] = useState('')
   const [tab, setTab] = useState<Tab>('settings')
+  // Editors stay mounted once opened, so switching tabs keeps unsaved edits.
+  const [visited, setVisited] = useState<Tab[]>(['settings'])
+  const [dirtyTabs, setDirtyTabs] = useState<Tab[]>([])
+  const markDirty = (which: Tab) => (on: boolean) =>
+    setDirtyTabs((old) => (on ? (old.includes(which) ? old : [...old, which]) : old.filter((t) => t !== which)))
+  const openSet = (id: string) => {
+    setOpen(id)
+    setTab('settings')
+    setVisited(['settings'])
+    setDirtyTabs([])
+  }
   const [name, setName] = useState('')
   const [nameTried, setNameTried] = useState(false)
   const sets = useQuery({ queryKey: ['set-details'], queryFn: () => api.backupSetDetails() })
@@ -852,8 +904,7 @@ export function BackupSets() {
     onSuccess: (set) => {
       setName('')
       setNameTried(false)
-      setOpen(String(set.id))
-      setTab('settings')
+      openSet(String(set.id))
       refresh()
     },
   })
@@ -873,12 +924,14 @@ export function BackupSets() {
     void client.invalidateQueries({ queryKey: ['source-browser'] })
   }
   const nameProblem = nameTried && !name.trim() ? 'Enter a name for the backup set.' : undefined
+  const [confirmDialog, ask] = useConfirm()
   return (
     <Page
       title="Backup sets"
       subtitle="Choose what to back up, where it goes and when it runs."
     >
-      <ErrorNotice error={sets.error ?? scans.error ?? remove.error ?? scan.error ?? ack.error} />
+      {confirmDialog}
+      <ErrorNotice error={sets.error ?? scans.error} />
       {sets.isPending ? (
         <Loading label="Loading backup sets…" />
       ) : (
@@ -891,13 +944,13 @@ export function BackupSets() {
           return (
             <div className="set-block" key={id}>
               <Section
-                title={<span title={'Backup set ID ' + id}>{backupSetName(set)}</span>}
+                title={backupSetName(set)}
                 actions={
                   <>
                     <button
                       type="button"
                       className="btn btn-sm"
-                      title={pending ? 'A full scan is already running or unresolved.' : 'Scan all selected files for changes now.'}
+                      aria-describedby={pending && !unresolvedScanStates.includes(current!.state) ? 'scan-pending-' + id : undefined}
                       disabled={scan.isPending || pending}
                       onClick={() => scan.mutate(id)}
                     >
@@ -907,9 +960,20 @@ export function BackupSets() {
                       type="button"
                       className={'btn btn-sm' + (isOpen ? ' btn-primary' : '')}
                       aria-expanded={isOpen}
-                      onClick={() => {
-                        setOpen(isOpen ? '' : id)
-                        setTab('settings')
+                      onClick={async () => {
+                        if (
+                          isOpen &&
+                          dirtyTabs.length > 0 &&
+                          !(await ask({
+                            title: 'Discard unsaved changes?',
+                            message: `Changes in ${dirtyTabs.map((t) => tabs.find((x) => x.value === t)!.label).join(', ')} are not saved yet.`,
+                            confirm: 'Discard',
+                            destructive: true,
+                          }))
+                        )
+                          return
+                        if (isOpen) setOpen('')
+                        else openSet(id)
                       }}
                     >
                       {isOpen ? 'Done' : 'Edit'}
@@ -939,6 +1003,9 @@ export function BackupSets() {
                     value={optionLabel(compressionOptions, fieldValue(set, 'compression'))}
                   />
                 )}
+                {pending && !unresolvedScanStates.includes(current!.state) && (
+                  <Row title="Full scan in progress" detail={<span id={'scan-pending-' + id}>A new scan can start when this one ends.</span>} />
+                )}
                 {current && (
                   <ScanRow
                     scan={current}
@@ -947,22 +1014,47 @@ export function BackupSets() {
                   />
                 )}
               </Section>
+              {(scan.error && scan.variables === id) || (ack.error && current && ack.variables === current.id) || (remove.error && remove.variables === id) ? (
+                <ErrorNotice error={(scan.variables === id && scan.error) || (remove.variables === id && remove.error) || ack.error} />
+              ) : null}
               {isOpen && (
                 <div className="set-editor">
-                  <Segmented label="Backup set settings" value={tab} options={tabs} onChange={setTab} />
-                  {tab === 'settings' ? (
-                    <>
-                      <SettingsEditor key={id} set={set} changed={changed} />
+                  <Segmented
+                    tabs
+                    label="Backup set settings"
+                    value={tab}
+                    options={tabs}
+                    marked={dirtyTabs}
+                    onChange={(next) => {
+                      setTab(next)
+                      setVisited((old) => (old.includes(next) ? old : [...old, next]))
+                    }}
+                  />
+                  <div hidden={tab !== 'settings'} role="tabpanel" aria-label="Schedule & options">
+                    <div className="set-editor">
+                      <SettingsEditor key={id} set={set} changed={changed} onDirty={markDirty('settings')} />
                       <DeleteSet set={set} remove={remove} />
-                    </>
-                  ) : tab === 'files' ? (
-                    <SourceSelection key={id} set={set} changed={changed} />
-                  ) : tab === 'destinations' ? (
-                    <Destinations set={set} changed={changed} />
-                  ) : tab === 'exclusions' ? (
-                    <Excludes key={id} set={set} changed={changed} />
-                  ) : (
-                    <Retention set={set} />
+                    </div>
+                  </div>
+                  {visited.includes('files') && (
+                    <div hidden={tab !== 'files'} role="tabpanel" aria-label="Files">
+                      <SourceSelection key={id} set={set} changed={changed} onDirty={markDirty('files')} />
+                    </div>
+                  )}
+                  {visited.includes('destinations') && (
+                    <div hidden={tab !== 'destinations'} role="tabpanel" aria-label="Destinations">
+                      <Destinations set={set} changed={changed} />
+                    </div>
+                  )}
+                  {visited.includes('exclusions') && (
+                    <div hidden={tab !== 'exclusions'} role="tabpanel" aria-label="Exclusions">
+                      <Excludes key={id} set={set} changed={changed} onDirty={markDirty('exclusions')} />
+                    </div>
+                  )}
+                  {visited.includes('retention') && (
+                    <div hidden={tab !== 'retention'} role="tabpanel" aria-label="Retention">
+                      <Retention set={set} />
+                    </div>
                   )}
                 </div>
               )}
@@ -985,6 +1077,7 @@ export function BackupSets() {
               className="input"
               aria-label="New backup set name"
               placeholder="Name"
+              autoComplete="off"
               value={name}
               maxLength={256}
               aria-invalid={nameProblem ? true : undefined}

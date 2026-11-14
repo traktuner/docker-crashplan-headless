@@ -118,17 +118,24 @@ export function App() {
   useEffect(() => {
     if (!session || engineChanged) return
     const events = new EventSource('/api/v1/events')
-    let last = 0
+    // Trailing throttle: one refresh at most every 2 s, and the last burst of
+    // notifications is never dropped.
+    let timer: ReturnType<typeof setTimeout> | undefined
     const update = () => {
-      if (Date.now() - last < 2000) return
-      last = Date.now()
-      void refreshStatus(queryClient)
+      if (timer) return
+      timer = setTimeout(() => {
+        timer = undefined
+        void refreshStatus(queryClient)
+      }, 2000)
     }
     events.addEventListener('update', update)
     events.onerror = () => {
       void api.session(true).catch(endExpiredSession)
     }
-    return () => events.close()
+    return () => {
+      if (timer) clearTimeout(timer)
+      events.close()
+    }
   }, [session, engineChanged])
   useEffect(() => {
     if (!session || engineChanged) return
