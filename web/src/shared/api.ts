@@ -61,8 +61,12 @@ const messages: Record<string, string> = {
     'CrashPlan temporarily limited sign-in attempts. Try again later.',
   NATIVE_AUTHORITY_UNAVAILABLE:
     'The account authority is unavailable. Try sign-in again later.',
+  NATIVE_REGISTRATION_KEY_REQUIRED:
+    'The authority supplied no registration key. Enter a valid registration key before creating the account.',
   NATIVE_REGISTRATION_REJECTED:
     'The registration key is invalid or account registration is blocked.',
+  LOCAL_ARCHIVE_JOURNAL_UNAVAILABLE:
+    'The local archive journal is unavailable. New device and local archive actions are disabled.',
   RESTORE_JOURNAL_UNAVAILABLE:
     'The restore journal is unavailable. New restores are disabled.',
   RESTORE_JOURNAL_FULL:

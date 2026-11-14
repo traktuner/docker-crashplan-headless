@@ -47,6 +47,7 @@ The jlesage configuration layout, device identity, cache and explicit heap setti
 An ordinary replacement keeps the device identity, so backup inheritance is unnecessary.
 Native sign-in can still be required when saved automatic login is ineligible.
 Stop the old engine before using its configuration with this image. Never run both against one configuration.
+Configuration files left with a non-root owner by another image are refused without change; see [container operation](docs/production-runtime.md).
 Take a consistent stopped backup before switching. Do not use an older backup after new metadata advances.
 Changing the image version never clears the cache. Actual replacement acceptance is still pending.
 

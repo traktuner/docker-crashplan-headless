@@ -101,6 +101,8 @@ A restart clears native workers; it does not prove cloud-side work completed.
 ## Headless operation
 
 Run `cphctl help` for the command catalog.
+A command with invalid syntax exits with status 2 before any request is sent.
+It prints a refusal category such as `INVALID_COMMAND` or `INVALID_RESTORE_COMMAND`.
 Secret-bearing account/security operations read JSON from standard input.
 No command accepts an arbitrary native URL, HTTP token or raw proxy operation.
 Use [container configuration](environment.md) for mode, logging and deployment settings.

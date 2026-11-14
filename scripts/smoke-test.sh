@@ -141,6 +141,21 @@ try:
   assert password not in logs.stdout and '[cph-agent]' not in logs.stdout,'native console or credential reached product stdout'
   record('private-native-console',structuredProductStdout=True)
   stop(name)
+  # A retained heap must come from its complete -Xmx line, even when another
+  # size option precedes it. Use only the already stopped fixture config.
+  docker('run','--rm','--network','none','--read-only','--entrypoint','sh','-v',config+':/config:rw',image,'-ec',
+   'printf -- "-Xms2G\\n-Xmx1536M\\r\\n" > /config/conf/jvm_args')
+  name='cph-smoke-'+nonce+'-saved-heap'
+  docker('run','-d','--name',name,'--network','none','--read-only','--tmpfs','/tmp:rw,nosuid,nodev','--tmpfs','/run:rw,nosuid,nodev,noexec',
+   '--memory','3g','--memory-swap','3g','-v',config+':/config:rw','-v',source+':/storage/test:ro',
+   '-e','CPH_SOURCE_ROOTS=["/storage/test"]','-e','CPH_SOURCE_SENTINEL=.cph-source-ready',image);containers.append(name)
+  retained=wait(name,lambda x:x['status']=='running' and x['native']['nativeReady'] and x['native']['eventsReady'])
+  arguments=docker('exec',name,'cat','/proc/'+str(retained['pid'])+'/cmdline').stdout.split('\0')
+  assert [arg for arg in arguments if arg.startswith('-Xmx')]==['-Xmx1536m'],'saved heap was not preserved'
+  saved=docker('exec',name,'od','-An','-tx1','/config/conf/jvm_args').stdout
+  assert bytes.fromhex(saved)==b'-Xms2G\n-Xmx1536M\r\n','saved heap arguments were rewritten'
+  record('retained-heap-launch',heapMiB=1536,otherSizeOptionIgnored=True,crlf=True,savedBytesPreserved=True)
+  stop(name)
 except BaseException as error:
  report['failure']={'category':type(error).__name__,'message':str(error)}
  raise

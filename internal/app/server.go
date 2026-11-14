@@ -337,8 +337,8 @@ func (s *Server) handler(local bool) http.Handler {
 		return nil
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Static web assets are added by release packaging. Do not present a
-		// placeholder dashboard as a completed native-client replacement.
+		// Serve the embedded SPA to browsers only. Unknown API paths and every
+		// non-API path on the Unix socket are not found.
 		if !local && s.options.Assets != nil && r.Method == "GET" && !strings.HasPrefix(r.URL.Path, "/api/") {
 			s.options.Assets.ServeHTTP(w, r)
 			return

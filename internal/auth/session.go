@@ -42,7 +42,6 @@ type Manager struct {
 	username   [32]byte
 	salt       []byte
 	key        []byte
-	origin     string
 	origins    map[string]bool
 	scheme     string
 	ttl        time.Duration
@@ -91,7 +90,7 @@ func newManager(username, password, publicOrigin string, ttl time.Duration) (*Ma
 	if err != nil {
 		return nil, ErrConfiguration
 	}
-	return &Manager{username: sha256.Sum256([]byte(username)), salt: salt, key: key, origin: origin, scheme: strings.SplitN(origin, ":", 2)[0], ttl: ttl, now: time.Now, sessions: make(map[string]Session), buckets: make(map[string]attemptBucket), hashing: make(chan struct{}, 2), admissions: make(chan struct{}, 8)}, nil
+	return &Manager{username: sha256.Sum256([]byte(username)), salt: salt, key: key, scheme: strings.SplitN(origin, ":", 2)[0], ttl: ttl, now: time.Now, sessions: make(map[string]Session), buckets: make(map[string]attemptBucket), hashing: make(chan struct{}, 2), admissions: make(chan struct{}, 8)}, nil
 }
 
 func randomID() (string, error) {

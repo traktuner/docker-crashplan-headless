@@ -25,6 +25,10 @@ func run(args []string, input io.Reader, output, diagnostic io.Writer) int {
 		fmt.Fprint(diagnostic, usage)
 		return 2
 	}
+	invalid := func() int {
+		fmt.Fprintln(diagnostic, "INVALID_COMMAND: run cphctl help for the command syntax")
+		return 2
+	}
 	dir := os.Getenv("CPH_RUN_DIR")
 	if dir == "" {
 		dir = "/run/cph"
@@ -40,7 +44,7 @@ func run(args []string, input io.Reader, output, diagnostic io.Writer) int {
 		var ok bool
 		method, path, body, ok = activityCommand(args)
 		if !ok {
-			return 2
+			return invalid()
 		}
 	case "security":
 		if len(args) == 4 && args[1] == "derive-key" && args[2] == "--output" {
@@ -52,41 +56,41 @@ func run(args []string, input io.Reader, output, diagnostic io.Writer) int {
 		var ok bool
 		method, path, body, ok = securityCommand(args[1:], input)
 		if !ok {
-			return 2
+			return invalid()
 		}
 	case "account":
 		var ok bool
 		method, path, body, ok = accountCommand(args[1:], input)
 		if !ok {
-			return 2
+			return invalid()
 		}
 	case "destinations":
 		var ok bool
 		method, path, body, ok = localArchiveCommand(args[1:], diagnostic)
 		if !ok {
-			return 2
+			return invalid()
 		}
 	case "devices":
 		var ok bool
 		method, path, body, ok = devicesCommand(args[1:], diagnostic)
 		if !ok {
-			return 2
+			return invalid()
 		}
 	case "settings":
 		if len(args) < 3 {
-			return 2
+			return invalid()
 		}
 		switch args[2] {
 		case "backup", "network", "general", "ui", "peer":
 		default:
-			return 2
+			return invalid()
 		}
 		path = "settings/" + args[2]
 		if args[1] == "get" && len(args) == 3 {
 			break
 		}
 		if args[1] != "set" || len(args) != 5 || !json.Valid([]byte(args[4])) {
-			return 2
+			return invalid()
 		}
 		method = "PATCH"
 		body = map[string]any{"changes": map[string]json.RawMessage{args[3]: json.RawMessage(args[4])}}
@@ -105,19 +109,19 @@ func run(args []string, input io.Reader, output, diagnostic io.Writer) int {
 		var ok bool
 		method, path, body, ok = setCommand(args[1:])
 		if !ok {
-			return 2
+			return invalid()
 		}
 	case "select":
 		var ok bool
 		method, path, body, ok = selectionCommand(args[1:], input)
 		if !ok {
-			return 2
+			return invalid()
 		}
 	case "scans":
 		path = "scans"
 	case "engine":
 		if len(args) != 2 || args[1] != "restart" {
-			return 2
+			return invalid()
 		}
 		method = "POST"
 		path = "engine/restart"
@@ -125,10 +129,10 @@ func run(args []string, input io.Reader, output, diagnostic io.Writer) int {
 	case "scan":
 		if len(args) >= 2 && args[1] == "ack" {
 			if len(args) != 3 || len(args[2]) != 32 {
-				return 2
+				return invalid()
 			}
 			if _, err := hex.DecodeString(args[2]); err != nil {
-				return 2
+				return invalid()
 			}
 			method = "POST"
 			path = "scans/" + args[2] + "/acknowledge"
@@ -136,25 +140,25 @@ func run(args []string, input io.Reader, output, diagnostic io.Writer) int {
 			break
 		}
 		if len(args) < 2 || strings.ContainsAny(args[1], "/?#%") {
-			return 2
+			return invalid()
 		}
 		flags := flag.NewFlagSet("scan", flag.ContinueOnError)
 		flags.SetOutput(io.Discard)
 		flags.BoolVar(&waitForScan, "wait", false, "wait for native completion")
 		flags.DurationVar(&waitTimeout, "timeout", 24*time.Hour, "maximum CLI wait; does not stop the engine")
 		if flags.Parse(args[2:]) != nil || flags.NArg() != 0 || waitTimeout <= 0 {
-			return 2
+			return invalid()
 		}
 		method = "POST"
 		path = "backup-sets/" + args[1] + "/scan"
 		body = struct{}{}
 	case "login":
 		if len(args) != 3 {
-			return 2
+			return invalid()
 		}
 		password, err := io.ReadAll(io.LimitReader(input, 65537))
 		if err != nil || len(password) > 65536 {
-			return 2
+			return invalid()
 		}
 		method = "POST"
 		path = "account/login"

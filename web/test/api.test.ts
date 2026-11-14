@@ -261,3 +261,78 @@ test('SSO confirmation sends only the explicitly presented identity and assertio
   ])
  } finally {server.close()}
 })
+
+// Every category the product API can return (internal/app/server.go, errorCode).
+// A category without a browser message becomes the generic REQUEST_FAILED text.
+const serverErrorCodes = [
+  'ARCHIVE_SEARCH_PENDING',
+  'ARCHIVE_SEARCH_SCOPE_UNSUPPORTED',
+  'ARCHIVE_STATISTICS_PENDING',
+  'ARCHIVE_UNLOCK_REQUIRED',
+  'CONTROL_BUSY',
+  'CSRF_REJECTED',
+  'ENGINE_NOT_RUNNING',
+  'INVALID_REQUEST',
+  'LOCAL_ARCHIVE_JOURNAL_UNAVAILABLE',
+  'LOGIN_ATTEMPT_ALREADY_COMPLETED',
+  'NATIVE_AUTHORITY_UNAVAILABLE',
+  'NATIVE_AUTHORIZATION_REQUIRED',
+  'NATIVE_ENGINE_UNAVAILABLE',
+  'NATIVE_LOGIN_IN_PROGRESS',
+  'NATIVE_LOGIN_REJECTED',
+  'NATIVE_LOGIN_THROTTLED',
+  'NATIVE_MFA_BROWSER_REQUIRED',
+  'NATIVE_OPERATION_INDETERMINATE',
+  'NATIVE_OPERATION_NOT_DISPATCHED',
+  'NATIVE_OPERATION_REJECTED',
+  'NATIVE_PROTOCOL_MISMATCH',
+  'NATIVE_REGISTRATION_KEY_REQUIRED',
+  'NATIVE_REGISTRATION_REJECTED',
+  'NATIVE_RESPONSE_PENDING',
+  'NATIVE_SESSION_CHANGED',
+  'PRIVATE_STATE_UNAVAILABLE',
+  'PUBLIC_ORIGIN_MISMATCH',
+  'RESTORE_DESTINATION_READ_ONLY',
+  'RESTORE_DESTINATION_REJECTED',
+  'RESTORE_DUPLICATE_NAMES',
+  'RESTORE_JOURNAL_FULL',
+  'RESTORE_JOURNAL_UNAVAILABLE',
+  'RESTORE_MARKER_REJECTED',
+  'RESTORE_NO_SPACE',
+  'RESTORE_PENDING_JOB_OUTSIDE_ROOTS',
+  'SCAN_ALREADY_PENDING',
+  'SCAN_JOURNAL_UNAVAILABLE',
+  'SETTING_LOCKED',
+  'SOURCE_FILESYSTEM_REJECTED',
+  'SOURCE_IDENTITY_CHANGED',
+  'SOURCE_NOT_MOUNTED',
+  'SOURCE_NOT_READY',
+  'SOURCE_SENTINEL_MISSING',
+  'WEB_AUTHORIZATION_REQUIRED',
+  'WEB_LOGIN_RATE_LIMITED',
+]
+
+test('every server error category keeps its own code and a specific message', async () => {
+  const server = createServer((request, response) => {
+    const code = decodeURIComponent(request.url!.split('/').pop()!)
+    response.writeHead(409, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify({ error: { code, message: 'server text is never displayed' } }))
+  }).listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  try {
+    const address = server.address()
+    assert(address && typeof address !== 'string')
+    const api = new API(`http://127.0.0.1:${address.port}`)
+    const generic = await api.accountSSOStatus('UNLISTED_CATEGORY').catch((error: unknown) => error)
+    assert(generic instanceof APIError && generic.code === 'REQUEST_FAILED')
+    for (const code of serverErrorCodes) {
+      const error = await api.accountSSOStatus(code).catch((error: unknown) => error)
+      assert(error instanceof APIError, code)
+      assert.equal(error.code, code)
+      assert.notEqual(error.message, generic.message, code)
+      assert.ok(!error.message.includes('server text'), code)
+    }
+  } finally {
+    server.close()
+  }
+})

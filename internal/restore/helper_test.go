@@ -1,6 +1,7 @@
 package restore
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/traktuner/crashplan-headless/internal/engine"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -196,5 +198,31 @@ func TestImportedHelperJobOutsideRestoreRootsIsRefused(t *testing.T) {
 	}
 	if err := h.admit(context.Background()); !errors.Is(err, ErrPendingJob) {
 		t.Fatal("imported job bypassed destination admission", err)
+	}
+}
+
+func TestHelperDataDirectoryRefusalNamesItsReason(t *testing.T) {
+	server := httptest.NewTLSServer(http.NotFoundHandler())
+	defer server.Close()
+	native, _ := engine.NewClient(server.URL, server.Client(), time.Second)
+	roots, _ := NewDestinations(nil)
+	defer roots.Close()
+	shared := t.TempDir()
+	if err := os.Chmod(shared, 0777); err != nil {
+		t.Fatal(err)
+	}
+	for reason, data := range map[string]string{"writable_by_others": shared, "unavailable": filepath.Join(t.TempDir(), "missing")} {
+		var logs bytes.Buffer
+		h, err := NewHelpers(HelperOptions{Native: native, Destinations: roots, Binary: "/bin/true", ExpectedSHA: strings.Repeat("0", 64), DataDir: data, LogDir: t.TempDir(), UserName: "root", Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := h.Begin(context.Background(), 1); !errors.Is(err, ErrHelper) {
+			t.Fatal("unsafe helper directory accepted", reason, err)
+		}
+		text := logs.String()
+		if !strings.Contains(text, "msg=restore_helper_directory_refused") || !strings.Contains(text, "reason="+reason) || strings.Contains(text, data) {
+			t.Fatal("helper directory refusal is not explained safely:", reason, text)
+		}
 	}
 }

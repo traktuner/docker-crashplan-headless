@@ -243,3 +243,43 @@ func TestRestoreEnforcementDefaultIsOnlyUsedForNative404(t *testing.T) {
 		}
 	}
 }
+
+func TestRestoreSubmissionAfterSessionChangeIsRefusedAsNotDispatched(t *testing.T) {
+	adds := 0
+	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/StatusQuery":
+			io.WriteString(w, `{"user":{"userId":17}}`)
+		case "/v0/RestorePrivateKeyRequest":
+			io.WriteString(w, `{"securityKeyInfoList":[{"sourceGuid":"7","dataKey":{"array":"YQ=="}}]}`)
+		case "/v1/Setting/device_engine_writepermission_enforcement_enabled":
+			io.WriteString(w, `{"device_engine_writepermission_enforcement_enabled":"false"}`)
+		case "/v1/AddRestore":
+			adds++
+			io.WriteString(w, `{"restoreId":"100","errors":[]}`)
+		}
+	})
+	c.SetToken("fixture")
+	request := RestoreSubmission{ID: "0", SourceID: "7", TargetID: "8", Destination: "/restore", Existing: "RENAME_ORIGINAL", Permissions: "current", Items: []RestoreSelection{{Path: "/data/x", BackupSetID: "1", Timestamp: "0"}}}
+	credentials, err := c.RestoreContext(context.Background(), "7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another native login completes between key retrieval and submission.
+	c.SetToken("fixture")
+	_, err = c.AddRestore(context.Background(), credentials, request)
+	if !errors.Is(err, ErrSessionChanged) || !errors.Is(err, ErrNotDispatched) || errors.Is(err, ErrIndeterminate) || adds != 0 {
+		t.Fatal("stale restore credentials were sent or not reported as not dispatched", err, adds)
+	}
+	// The same refusal applies to credentials from an ended engine generation.
+	credentials, err = c.RestoreContext(c.BindGeneration(context.Background()), "7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := c.BindGeneration(context.Background())
+	credentials.revision = c.SessionRevision()
+	_, err = c.AddRestore(next, credentials, request)
+	if !errors.Is(err, ErrUnavailable) || !errors.Is(err, ErrNotDispatched) || errors.Is(err, ErrIndeterminate) || adds != 0 {
+		t.Fatal("restore credentials crossed an engine generation", err, adds)
+	}
+}

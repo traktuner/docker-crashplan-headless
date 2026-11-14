@@ -3,8 +3,11 @@ package main
 const usage = `Usage: cphctl COMMAND
 
 status | health | summary | devices
-sets list|show|create|edit|delete|priority
-select browse|set
+sets | sets list | sets show ID | sets create NAME
+sets edit ID FIELD JSON | sets delete ID --confirm ID
+sets destination ID DESTINATION attach|detach
+select browse ID [--parent DIRECTORY] [--offset N] [--limit N]
+select set ID PATH [--directory] [--exclude] | select excludes ID
 settings get AREA | settings set AREA FIELD JSON
 scan SET [--wait --timeout 24h] | scans | scan ack ID
 pause [--set ID|--plan ID|--destination ID] [--minutes 60]
@@ -14,14 +17,19 @@ account setup|configuration|login|sso|sso-status|sso-cancel
 account sso-confirm ID ASSERTION_ID --confirm CANONICAL_USERNAME
 account sso-discard ID ASSERTION_ID
 account migration|candidates|replacement|migrate|inherit|replace
-security status|unlock|backup-unlock|password|key-type
+security status|unlock|backup-unlock|password|key-type|custom-key
 security export-key --output NEW_PRIVATE_FILE
-restore roots|sets|browse|versions|search|start|jobs|operations|helper
+security derive-key --output NEW_PRIVATE_FILE
+restore roots|sets|browse|versions|contents|search|start|jobs|operations|helper
 restore stop|resume|remove ID
 restore archive --confirm ARCHIVE REQUEST_ID...
 engine restart
 
 Account login/configuration/SSO and security mutations read a JSON object from stdin.
+security derive-key reads its JSON passphrase input from stdin and writes only the new private file.
+select excludes reads the complete JSON pattern array from stdin, for example
+  [{"pattern":"*.tmp","regularExpression":false}].
+sets edit changes one field, for example: sets edit 1 priority 2.
 The legacy login USER SERVER command reads only its password from stdin.
 Never put passwords, archive keys or native tokens in command arguments.
 
@@ -33,6 +41,7 @@ Local archives: destinations policy; destinations status HEX32; destinations cre
   [--request-id HEX32]. Keep LOCAL_ARCHIVE_REQUEST_ID to retrieve the same submission.
 
 Restore queries use --source ID --destination ID --set ID.
+restore contents reports selection counts and bytes; it does not download archived files.
 Use --at EPOCH_MILLISECONDS for a historical archive cutoff (0 means latest).
 Search adds --pattern PATTERN and optionally --full-path.
 Start adds --root ID [--relative EXISTING_DIRECTORY], or --original.

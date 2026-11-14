@@ -245,11 +245,13 @@ func (c *Client) AddRestore(ctx context.Context, credentials RestoreCredentials,
 	if in.Validate() != nil || !credentials.verified || credentials.key == "" || credentials.userID < 0 {
 		return "", ErrInvalidRequest
 	}
+	// Both refusals happen before the native request. Report them as not
+	// dispatched so the submission record does not stay unresolved.
 	if credentials.revision != c.SessionRevision() {
-		return "", ErrSessionChanged
+		return "", errors.Join(ErrNotDispatched, ErrSessionChanged)
 	}
 	if credentials.generation != nil && ctx.Value(generationKey{}) != credentials.generation {
-		return "", ErrUnavailable
+		return "", errors.Join(ErrNotDispatched, ErrUnavailable)
 	}
 	if credentials.helperRequired {
 		if !validID(in.ID) {

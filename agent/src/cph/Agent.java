@@ -14,8 +14,9 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>Environment:
  * <ul>
- *   <li>CPH_PATCHES: comma-separated patch names (default: none)</li>
+ *   <li>CPH_PATCHES: comma-separated optional watcher patch names, or "none".</li>
  * </ul>
+ * The restore boundary and archive query patches are always applied.
  */
 public final class Agent {
 

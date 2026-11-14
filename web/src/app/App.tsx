@@ -77,6 +77,16 @@ export function App() {
       })
       .finally(() => setReady(true))
   }, [])
+  // An expired or ended web session returns the interface to its sign-in page.
+  function endExpiredSession(error: unknown) {
+    if (
+      error instanceof APIError &&
+      error.code === 'WEB_AUTHORIZATION_REQUIRED'
+    ) {
+      queryClient.clear()
+      setSession(undefined)
+    }
+  }
   useEffect(() => {
     if (!session || engineChanged) return
     const events = new EventSource('/api/v1/events')
@@ -88,15 +98,7 @@ export function App() {
     }
     events.addEventListener('update', update)
     events.onerror = () => {
-      void api.session(true).catch((error) => {
-        if (
-          error instanceof APIError &&
-          error.code === 'WEB_AUTHORIZATION_REQUIRED'
-        ) {
-          queryClient.clear()
-          setSession(undefined)
-        }
-      })
+      void api.session(true).catch(endExpiredSession)
     }
     return () => events.close()
   }, [session, engineChanged])
@@ -106,15 +108,7 @@ export function App() {
     const activity = () => {
       if (Date.now() - renewed < 60_000) return
       renewed = Date.now()
-      void api.session().catch((error) => {
-        if (
-          error instanceof APIError &&
-          error.code === 'WEB_AUTHORIZATION_REQUIRED'
-        ) {
-          queryClient.clear()
-          setSession(undefined)
-        }
-      })
+      void api.session().catch(endExpiredSession)
     }
     window.addEventListener('pointerdown', activity, { passive: true })
     window.addEventListener('keydown', activity)

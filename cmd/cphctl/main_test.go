@@ -123,3 +123,56 @@ func TestSettingsCLIReportsIgnoredUpdateAsFailure(t *testing.T) {
 		t.Fatal("ignored update reported success", exit, out.String(), diag.String())
 	}
 }
+
+func TestHelpAdvertisesExactlyTheImplementedCommandForms(t *testing.T) {
+	for _, form := range []string{"sets destination ID DESTINATION attach|detach", "select excludes ID", "custom-key", "security derive-key --output NEW_PRIVATE_FILE", "browse|versions|contents|search"} {
+		if !strings.Contains(usage, form) {
+			t.Error("implemented command missing from help:", form)
+		}
+	}
+	if strings.Contains(usage, "delete|priority") {
+		t.Error("help advertises a set command that does not exist")
+	}
+	// An empty private directory has no daemon. Exit 3 proves that the form
+	// was accepted and reached the transport; exit 2 means it was refused.
+	t.Setenv("CPH_RUN_DIR", t.TempDir())
+	output := filepath.Join(t.TempDir(), "key")
+	for _, c := range []struct {
+		stdin string
+		args  []string
+	}{
+		{"", []string{"sets"}}, {"", []string{"sets", "list"}}, {"", []string{"sets", "show", "7"}}, {"", []string{"sets", "create", "Documents"}},
+		{"", []string{"sets", "edit", "7", "priority", "1"}}, {"", []string{"sets", "delete", "7", "--confirm", "7"}},
+		{"", []string{"sets", "destination", "7", "8", "attach"}}, {"", []string{"sets", "destination", "7", "8", "detach"}},
+		{"", []string{"select", "browse", "7", "--parent", "/storage/data"}}, {"", []string{"select", "set", "7", "/storage/data", "--directory", "--exclude"}},
+		{`[{"pattern":"*.tmp","regularExpression":false}]`, []string{"select", "excludes", "7"}},
+		{"", []string{"security", "status"}}, {"{}", []string{"security", "custom-key"}}, {"{}", []string{"security", "key-type"}},
+		{"{}", []string{"security", "derive-key", "--output", output}}, {"", []string{"security", "export-key", "--output", output}},
+		{"", []string{"restore", "contents", "--source", "7", "--destination", "8", "--set", "1"}},
+		{"", []string{"settings", "get", "backup"}}, {"", []string{"scans"}}, {"", []string{"engine", "restart"}},
+	} {
+		var out, diag bytes.Buffer
+		if exit := run(c.args, strings.NewReader(c.stdin), &out, &diag); exit != 3 {
+			t.Error("advertised command did not reach the control transport:", c.args, exit, diag.String())
+		}
+	}
+}
+
+func TestRefusedCommandsExplainTheRefusalWithoutConnection(t *testing.T) {
+	t.Setenv("CPH_RUN_DIR", t.TempDir())
+	var keyOut, keyDiag bytes.Buffer
+	if exit := run([]string{"security", "derive-key", "--output", filepath.Join(t.TempDir(), "key")}, strings.NewReader("not json"), &keyOut, &keyDiag); exit != 2 || !strings.Contains(keyDiag.String(), "INVALID_COMMAND") {
+		t.Error("invalid key input gave no explanation:", exit, keyDiag.String())
+	}
+	for _, args := range [][]string{
+		{"sets", "priority", "7", "1"}, {"sets", "edit", "7", "priority"}, {"select", "set", "7"}, {"security", "import-key"},
+		{"account", "login", "extra"}, {"settings", "get", "secrets"}, {"scan"}, {"scan", "ack", "short"}, {"engine", "stop"},
+		{"devices", "rename", "7"}, {"destinations", "create"}, {"pause", "--set", "0"}, {"login", "user"},
+		{"security", "derive-key", "--output", filepath.Join(t.TempDir(), "key"), "extra"},
+	} {
+		var out, diag bytes.Buffer
+		if exit := run(args, strings.NewReader("{}"), &out, &diag); exit != 2 || !strings.Contains(diag.String(), "INVALID_COMMAND") || out.Len() != 0 {
+			t.Error("refused command gave no explanation:", args, exit, diag.String())
+		}
+	}
+}

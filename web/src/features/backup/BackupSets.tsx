@@ -3,19 +3,11 @@ import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowLeft, Folder, File, ChevronRight, RefreshCw } from 'lucide-react'
-import { api, APIError } from '../../shared/api'
+import { api } from '../../shared/api'
 import type { BackupSet, SelectionPath, SetResult } from '../../shared/api'
+import { ErrorNotice } from '../../shared/components'
 import { PatternControl, SettingControl } from '../settings/Settings'
 
-function Notice({ error }: { error: unknown }) {
-  return error ? (
-    <div className="notice error" role="alert">
-      {error instanceof APIError
-        ? error.message
-        : 'The operation failed. Check the service logs.'}
-    </div>
-  ) : null
-}
 function backupSetName(set: BackupSet) {
   return String(set.fields.find((f) => f.name === 'name')?.value ?? set.id)
 }
@@ -84,7 +76,7 @@ function SourceSelection({
         </button>
         <span>{parent || 'Filesystem roots'}</span>
       </div>
-      <Notice error={query.error ?? save.error} />
+      <ErrorNotice error={query.error ?? save.error} />
       {query.isFetching ? (
         <p role="status">Reading directory…</p>
       ) : (
@@ -226,7 +218,7 @@ function Excludes({
           Save exclusions
         </button>
       </div>
-      <Notice error={save.error} />
+      <ErrorNotice error={save.error} />
       <Result result={save.data} />
     </>
   )
@@ -249,7 +241,7 @@ function Destinations({
   })
   return (
     <>
-      <Notice error={devices.error ?? save.error} />
+      <ErrorNotice error={devices.error ?? save.error} />
       {devices.data
         ?.filter(
           (d) =>
@@ -359,7 +351,7 @@ function SetEditor({
           <button disabled={Object.keys(draft).length === 0 || save.isPending}>
             Save set settings
           </button>
-          <Notice error={save.error} />
+          <ErrorNotice error={save.error} />
           <Result result={save.data} />
         </form>
       ) : tab === 'selection' ? (
@@ -457,7 +449,7 @@ export function BackupSets() {
         </summary>
         <LocalArchives />
       </details>
-      <Notice
+      <ErrorNotice
         error={
           sets.error ??
           scans.error ??

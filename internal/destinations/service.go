@@ -68,15 +68,20 @@ func (s *Service) Start(ctx context.Context, in Request) (Operation, error) {
 	name := "local-archive-" + in.RequestID + ".json"
 	if raw, err := s.store.Read(name); err == nil {
 		var saved Operation
-		if json.Unmarshal(raw, &saved) != nil || saved.RequestID != in.RequestID || saved.Digest != digest {
+		if json.Unmarshal(raw, &saved) != nil || saved.RequestID != in.RequestID || len(saved.Digest) != 64 {
 			return saved, ErrJournal
 		}
 		switch saved.State {
 		case "indeterminate", "accepted", "completed", "needs-attach", "source-missing", "relocated", "rejected":
-			return saved, nil
 		default:
 			return saved, ErrJournal
 		}
+		// An intact saved submission with another payload is a caller error,
+		// not a journal failure. The saved record stays unchanged.
+		if saved.Digest != digest {
+			return Operation{}, engine.ErrInvalidRequest
+		}
+		return saved, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Operation{}, ErrJournal
 	}
@@ -270,6 +275,10 @@ func (s *Service) Status(id string) (Operation, error) {
 		return Operation{}, engine.ErrInvalidRequest
 	}
 	raw, err := s.store.Read("local-archive-" + id + ".json")
+	if errors.Is(err, os.ErrNotExist) {
+		// No submission used this ID. The journal itself is intact.
+		return Operation{}, engine.ErrInvalidRequest
+	}
 	if err != nil {
 		return Operation{}, ErrJournal
 	}

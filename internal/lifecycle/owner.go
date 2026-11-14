@@ -98,19 +98,18 @@ func (o *Owner) Begin(parent context.Context, id uint64) error {
 	if o.current != nil {
 		return ErrBusy
 	}
-	ctx, cancel := context.WithCancel(parent)
-	g := &generation{id: id, ctx: ctx, cancel: cancel, queue: make(chan operation, 16), state: State{Generation: strconv.FormatUint(id, 10), SessionRestore: "pending", ScanJournalReady: o.options.Scans != nil}}
-	o.options.Native.SetToken("")
-	ctx = o.options.Native.BindGeneration(ctx)
-	g.ctx = ctx
 	var unique [16]byte
 	if _, err := rand.Read(unique[:]); err != nil {
-		cancel()
 		return engine.ErrUnavailable
 	}
-	g.state.Generation = hex.EncodeToString(unique[:]) + "-" + strconv.FormatUint(id, 10)
+	// The random part keeps journal records of an earlier daemon process apart.
+	label := hex.EncodeToString(unique[:]) + "-" + strconv.FormatUint(id, 10)
+	ctx, cancel := context.WithCancel(parent)
+	o.options.Native.SetToken("")
+	ctx = o.options.Native.BindGeneration(ctx)
+	g := &generation{id: id, ctx: ctx, cancel: cancel, queue: make(chan operation, 16), state: State{Generation: label, SessionRestore: "pending", ScanJournalReady: o.options.Scans != nil}}
 	if o.options.Scans != nil {
-		if err := o.options.Scans.BeginGeneration(hex.EncodeToString(unique[:]) + "-" + strconv.FormatUint(id, 10)); err != nil {
+		if err := o.options.Scans.BeginGeneration(label); err != nil {
 			g.state.ScanJournalReady = false
 			o.options.Logger.Warn("scan_journal_unavailable")
 		}
@@ -298,7 +297,7 @@ func (o *Owner) monitor(g *generation) {
 			}
 			wasAuthorized = authorized
 			// Restore failure never prevents event delivery, token renewal or scans.
-			if _, err := o.options.Native.OpenEvents(ctxForGeneration(g)); err != nil {
+			if _, err := o.options.Native.OpenEvents(g.ctx); err != nil {
 				o.setState(g, func(s *State) { s.EventsReady = false })
 			}
 			interval := 120 * time.Second
@@ -327,4 +326,3 @@ func (o *Owner) monitor(g *generation) {
 		}
 	}
 }
-func ctxForGeneration(g *generation) context.Context { return g.ctx }

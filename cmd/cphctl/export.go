@@ -14,6 +14,7 @@ func exportArchiveKey(client *ctl.Client, path string, out, diagnostic io.Writer
 func exportDerivedKey(client *ctl.Client, path string, input io.Reader, out, diagnostic io.Writer) int {
 	raw, ok := readPrivateJSON(input)
 	if !ok {
+		fmt.Fprintln(diagnostic, "INVALID_COMMAND: derive-key reads one JSON object from stdin")
 		return 2
 	}
 	return saveKeyDownload(path, func() ([]byte, error) { return client.ExportDerivedKey(context.Background(), raw) }, out, diagnostic)

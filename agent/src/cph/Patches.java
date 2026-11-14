@@ -156,8 +156,8 @@ public final class Patches {
 
         // Suppressing watch() alone still lets the registration worker enumerate
         // every readable descendant. That extra walk loads filesystem metadata.
-        // Use with no-file-watcher for the scan-only experiment; the actual
-        // backup verification worker is a different class and stays unchanged.
+        // Use with no-file-watcher for scan-only discovery; the actual backup
+        // verification worker is a different class and stays unchanged.
         register(new Patch(
                 "no-watcher-walk",
                 "skip the recursive watcher-registration walk",

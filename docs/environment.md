@@ -20,6 +20,7 @@ Use the CLI or web interface to change those preferences without restarting the 
 | `TZ` | Image/system default | Native process timezone. Compose uses `UTC` unless overridden. |
 | `LANG`, `LC_ALL` | `C.UTF-8` | Native locale and filename encoding. Keep a UTF-8 locale. |
 
+The daemon runs as UID 0. `USER_ID` or `GROUP_ID` values other than `0`, as used by some other images, are refused at startup.
 Mount every declared source at its exact container path.
 For ordinary host-directory binds, create the configured marker in each source before starting.
 The marker must be a regular file. Its contents are not used.
@@ -60,6 +61,8 @@ ports:
 ```
 
 For a reverse proxy, use its public HTTPS origin and proxy to the container HTTP listener.
+Configure the proxy to pass the original `Host` header.
+A request whose host and port match no configured origin is refused with `PUBLIC_ORIGIN_MISMATCH`.
 Restrict direct access to that listener.
 Add the proxy's actual CIDR only when forwarded client-address handling is required.
 
@@ -67,7 +70,7 @@ Add the proxy's actual CIDR only when forwarded client-address handling is requi
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `CRASHPLAN_SRV_MAX_MEM` | Saved heap; otherwise `1024M` launcher fallback | Explicit maximum heap, such as `4G` or `8192M`. Minimum 1024 MiB. An explicit value updates saved `jvm_args`. |
+| `CRASHPLAN_SRV_MAX_MEM` | Saved heap; otherwise `1024M` launcher fallback | Explicit maximum heap: digits and one unit `G`, `M` or `K`, such as `4G` or `8192M`. Minimum 1024 MiB. An explicit value updates saved `jvm_args`. |
 | `CPH_GC` | `g1` | Garbage collector: `g1`, `shenandoah`, `zgc`. Keep the default unless tuning a measured workload. |
 | `CPH_G1_PERIODIC_GC_MS` | `300000` | G1 periodic collection interval in milliseconds. |
 | `CPH_UNCOMMIT_DELAY_MS` | `300000` | Shenandoah/ZGC uncommit delay in milliseconds. ZGC receives whole seconds. |
@@ -79,6 +82,10 @@ Add the proxy's actual CIDR only when forwarded client-address handling is requi
 These options control memory behavior; they do not replace the container memory limit.
 Preserve sufficient headroom for native allocations and host filesystem caches.
 An empty heap override preserves an existing installation.
+A malformed override or one below the minimum is refused before the saved value changes.
+The saved heap is the first complete `-Xmx<number><unit>` line in `/config/conf/jvm_args`.
+If that file contains `-Xmx` in another form, startup stops and the private native console names the file.
+It does not fall back to 1024 MiB; set `CRASHPLAN_SRV_MAX_MEM` explicitly in that case.
 Unsupported JVM options fail startup and appear in the private native console.
 
 ## Advanced integration and diagnostics

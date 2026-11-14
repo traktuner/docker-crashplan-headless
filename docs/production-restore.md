@@ -51,6 +51,7 @@ Replace these example identifiers and paths with the actual archive context.
 cphctl restore roots
 cphctl restore browse --source 7 --destination 8 --set 1
 cphctl restore versions --source 7 --destination 8 --set 1 --file-id AQAAAAAAAAAAAAAAAAAAAA==
+cphctl restore contents --source 7 --destination 8 --set 1 --file-id AQAAAAAAAAAAAAAAAAAAAA==
 cphctl restore start --source 7 --destination 8 --set 1 --root 0 --path /storage/data/file
 cphctl restore jobs
 cphctl restore operations

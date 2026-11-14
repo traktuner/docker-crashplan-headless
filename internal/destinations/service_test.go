@@ -3,6 +3,7 @@ package destinations
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -96,9 +97,32 @@ func TestLocalArchiveAdmissionAndReplay(t *testing.T) {
 				if e != nil || writes != 1 || again.State != result.State {
 					t.Fatal("replayed operation", again, e, writes)
 				}
+				if _, e := restart.Status(strings.Repeat("b", 32)); !errors.Is(e, engine.ErrInvalidRequest) || errors.Is(e, ErrJournal) {
+					t.Fatal("unknown submission ID is not reported as an invalid request", e)
+				}
 				in.Target.Relative = "changed"
 				if _, e := restart.Start(context.Background(), in); e == nil {
 					t.Fatal("request digest changed")
+				} else if !errors.Is(e, engine.ErrInvalidRequest) || errors.Is(e, ErrJournal) {
+					t.Fatal("changed payload under a saved ID is not reported as an invalid request", e)
+				}
+				if kept, e := restart.Status(in.RequestID); e != nil || kept.State != result.State || kept.Digest != saved.Digest || writes != 1 {
+					t.Fatal("refused payload changed the saved submission", kept, e, writes)
+				}
+				for _, damaged := range []string{
+					`{"requestId":"other"}`,
+					`{"requestId":"` + in.RequestID + `","requestDigest":"short","state":"accepted"}`,
+					`{"requestId":"` + in.RequestID + `","requestDigest":"` + strings.Repeat("0", 64) + `","state":"unknown"}`,
+				} {
+					if store.Write("local-archive-"+in.RequestID+".json", []byte(damaged)) != nil {
+						t.Fatal("fixture record not replaced")
+					}
+					if _, e := restart.Start(context.Background(), in); !errors.Is(e, ErrJournal) || errors.Is(e, engine.ErrInvalidRequest) || writes != 1 {
+						t.Fatal("damaged saved submission is not a journal failure", damaged, e, writes)
+					}
+					if _, e := restart.Status(in.RequestID); !errors.Is(e, ErrJournal) {
+						t.Fatal("damaged saved submission status is not a journal failure", damaged, e)
+					}
 				}
 			}
 		})

@@ -31,10 +31,19 @@ heap_mb() {
     esac
 }
 
+SAVED_HEAP="$CP_DIR/conf/jvm_args"
 if [[ -n "${CRASHPLAN_SRV_MAX_MEM:-}" ]]; then
     XMX_MB="$(heap_mb "$CRASHPLAN_SRV_MAX_MEM")"
-elif [[ -f "$CP_DIR/conf/jvm_args" ]] && grep -qE '^-Xmx[0-9]+[gGmMkK]$' "$CP_DIR/conf/jvm_args"; then
-    XMX_MB="$(heap_mb "$(grep -oE '[0-9]+[gGmMkK]$' "$CP_DIR/conf/jvm_args" | head -1)")"
+elif [[ -f "$SAVED_HEAP" ]] && grep -q -- '-Xmx' "$SAVED_HEAP"; then
+    # Use the first complete -Xmx line; trailing whitespace or CR is accepted.
+    # A saved heap that cannot be read stops the start. It never becomes the
+    # 1024M default silently.
+    saved="$(sed -nE '/^-Xmx[0-9]+[gGmMkK][[:space:]]*$/{s/^-Xmx([0-9]+[gGmMkK]).*/\1/p;q}' "$SAVED_HEAP")"
+    if [[ -z "$saved" ]]; then
+        log "ERROR: conf/jvm_args has an unsupported -Xmx value; set CRASHPLAN_SRV_MAX_MEM (e.g. 4096M or 40G)"
+        exit 1
+    fi
+    XMX_MB="$(heap_mb "$saved")"
 else
     XMX_MB=1024
 fi

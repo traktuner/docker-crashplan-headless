@@ -21,8 +21,7 @@ for mode in baseline watch-only scan-only; do
         scan-only) patches=no-file-watcher,no-watcher-walk ;;
     esac
     docker run --rm --network none -v "$work/probes.jar:/test/probes.jar:ro" \
-        -e CPH_PATCHES="$patches" -e CPH_CONTROL=0 \
-        -e CPH_DIAG_DIR=/tmp/diag -e CPH_DIAG_INTERVAL_SECONDS=0 \
+        -e CPH_PATCHES="$patches" \
         -e LD_LIBRARY_PATH=/usr/local/crashplan/nlib \
         --entrypoint /usr/local/crashplan/jre/bin/java "$image" \
         --enable-native-access=ALL-UNNAMED -Djna.nosys=true \

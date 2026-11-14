@@ -11,6 +11,16 @@ An empty configuration receives the bundled defaults.
 Keep the same source paths inside the container when replacing an existing image.
 Run only one engine against a configuration volume.
 
+The daemon runs as UID 0 and replaces only files that it owns.
+In an existing configuration, `machine-id`, `cp_version` and `conf/my.service.xml` must be regular files owned by UID 0 with one hard link.
+The same applies to `conf/jvm_args` when `CRASHPLAN_SRV_MAX_MEM` is set.
+The `var` directory must be owned by UID 0 and must not be writable by group or others; the restore helper uses private pipes there.
+An image that ran its engine under another user ID can leave these items with that owner.
+Initialization then stops with `CONFIG_INITIALIZATION_FAILED` or `RESTORE_HELPER_UNAVAILABLE`; the refused item remains unchanged.
+Earlier initialization steps may already have created directories or updated other configuration files.
+The preceding `configuration_item_refused` or `restore_helper_directory_refused` log entry names the reason, for example `foreign_owner`.
+Correct the ownership while every engine is stopped, then start again.
+
 Before replacement, stop the existing engine and take a consistent configuration backup.
 Preserve its source mappings and saved heap limit.
 An ordinary replacement keeps the device identity; inheritance is for deliberately replacing a device.

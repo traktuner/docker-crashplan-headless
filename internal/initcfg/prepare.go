@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -24,18 +25,48 @@ var versionPattern = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){1,3}(?:[-a-zA-Z0-9.
 var heapPattern = regexp.MustCompile(`^[1-9][0-9]{0,8}[gGmMkK]$`)
 var hostPattern = regexp.MustCompile(`<serviceHost>[^<]*</serviceHost>`)
 
+// The launcher refuses a smaller heap. Refuse it here before any saved value changes.
+const minimumHeapMiB = 1024
+
 type Options struct {
 	Root, Defaults, Version, Heap string
 	MountInfo                     []byte
 	Logger                        *slog.Logger
 }
 
+// refuse names the fixed configuration item that stopped initialization.
+// Items and reasons are product constants; contents and host paths stay private.
+func refuse(logger *slog.Logger, item, reason string) error {
+	logger.Error("configuration_item_refused", "item", item, "reason", reason)
+	return ErrInit
+}
+
+// heapMiB uses the launcher's whole-mebibyte conversion for a validated value.
+func heapMiB(heap string) int64 {
+	n, _ := strconv.ParseInt(heap[:len(heap)-1], 10, 64)
+	switch heap[len(heap)-1] {
+	case 'g', 'G':
+		return n * 1024
+	case 'k', 'K':
+		return n / 1024
+	}
+	return n
+}
+
 func Prepare(options Options) error {
-	if !filepath.IsAbs(options.Root) || filepath.Clean(options.Root) != options.Root || options.Root == "/" || !versionPattern.MatchString(options.Version) || (options.Heap != "" && !heapPattern.MatchString(options.Heap)) {
+	if !filepath.IsAbs(options.Root) || filepath.Clean(options.Root) != options.Root || options.Root == "/" || !versionPattern.MatchString(options.Version) {
 		return ErrInit
 	}
 	if options.Logger == nil {
 		options.Logger = slog.Default()
+	}
+	if options.Heap != "" {
+		if !heapPattern.MatchString(options.Heap) {
+			return refuse(options.Logger, "CRASHPLAN_SRV_MAX_MEM", "invalid_format")
+		}
+		if heapMiB(options.Heap) < minimumHeapMiB {
+			return refuse(options.Logger, "CRASHPLAN_SRV_MAX_MEM", "below_minimum")
+		}
 	}
 	raw := options.MountInfo
 	if raw == nil {
@@ -71,16 +102,20 @@ func Prepare(options Options) error {
 			return ErrInit
 		}
 		options.Logger.Info("configuration_seeded")
-	} else if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+	} else if err != nil {
 		return ErrInit
+	} else if !info.IsDir() {
+		return refuse(options.Logger, "conf", "not_directory")
 	}
 	for _, name := range []string{"log", "cache", "var", "repository", "repository/metadata", ".crashplan", "diag"} {
 		path := filepath.Join(options.Root, name)
 		if err := os.Mkdir(path, 0700); err != nil && !errors.Is(err, os.ErrExist) {
 			return ErrInit
 		}
-		if info, err := os.Lstat(path); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		if info, err := os.Lstat(path); err != nil {
 			return ErrInit
+		} else if !info.IsDir() {
+			return refuse(options.Logger, name, "not_directory")
 		}
 	}
 	identity := filepath.Join(options.Root, "machine-id")
@@ -92,8 +127,10 @@ func Prepare(options Options) error {
 		if err := atomicWrite(identity, []byte(hex.EncodeToString(id[:]))); err != nil {
 			return err
 		}
-	} else if err != nil || !safeRegular(info) {
+	} else if err != nil {
 		return ErrInit
+	} else if reason := unsafeReason(info); reason != "" {
+		return refuse(options.Logger, "machine-id", reason)
 	}
 	logLink := filepath.Join(options.Root, ".crashplan/log")
 	if _, err := os.Lstat(logLink); errors.Is(err, os.ErrNotExist) {
@@ -104,14 +141,20 @@ func Prepare(options Options) error {
 		return ErrInit
 	}
 	if options.Heap != "" {
-		if err := atomicWrite(filepath.Join(conf, "jvm_args"), []byte("-Xmx"+options.Heap+"\n")); err != nil {
+		saved := filepath.Join(conf, "jvm_args")
+		if info, err := os.Lstat(saved); err == nil {
+			if reason := unsafeReason(info); reason != "" {
+				return refuse(options.Logger, "conf/jvm_args", reason)
+			}
+		}
+		if err := atomicWrite(saved, []byte("-Xmx"+options.Heap+"\n")); err != nil {
 			return err
 		}
 	}
 	service := filepath.Join(conf, "my.service.xml")
 	if info, err := os.Lstat(service); err == nil {
-		if !safeRegular(info) {
-			return ErrInit
+		if reason := unsafeReason(info); reason != "" {
+			return refuse(options.Logger, "conf/my.service.xml", reason)
 		}
 		data, err := os.ReadFile(service)
 		if err != nil {
@@ -124,7 +167,7 @@ func Prepare(options Options) error {
 				break
 			}
 			if err != nil {
-				return ErrInit
+				return refuse(options.Logger, "conf/my.service.xml", "malformed_xml")
 			}
 		}
 		updated := hostPattern.ReplaceAll(data, []byte("<serviceHost>127.0.0.1</serviceHost>"))
@@ -138,8 +181,8 @@ func Prepare(options Options) error {
 	}
 	marker := filepath.Join(options.Root, "cp_version")
 	if info, err := os.Lstat(marker); err == nil {
-		if !safeRegular(info) {
-			return ErrInit
+		if reason := unsafeReason(info); reason != "" {
+			return refuse(options.Logger, "cp_version", reason)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return ErrInit
@@ -204,10 +247,23 @@ func copyDefaults(source, destination string) error {
 		return nil
 	})
 }
-func safeRegular(info os.FileInfo) bool {
+
+// unsafeReason explains why an existing file is not read or replaced. A file
+// must be regular, owned by the daemon user and have exactly one name.
+func unsafeReason(info os.FileInfo) string {
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && info.Mode().IsRegular() && stat.Uid == uint32(os.Geteuid()) && stat.Nlink == 1
+	switch {
+	case !ok || !info.Mode().IsRegular():
+		return "not_regular_file"
+	case stat.Uid != uint32(os.Geteuid()):
+		return "foreign_owner"
+	case stat.Nlink != 1:
+		return "hard_linked"
+	}
+	return ""
 }
+func safeRegular(info os.FileInfo) bool { return unsafeReason(info) == "" }
+
 func atomicWrite(path string, data []byte) error {
 	before, err := os.Lstat(path)
 	absent := errors.Is(err, os.ErrNotExist)

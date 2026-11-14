@@ -95,17 +95,21 @@ func (h *Helpers) Begin(parent context.Context, id uint64) error {
 	}
 	data, err := openDirectory(h.options.DataDir)
 	if err != nil {
-		return ErrHelper
+		return h.refuseData("unavailable")
 	}
 	info, err := data.Stat()
 	if err != nil {
 		data.Close()
-		return ErrHelper
+		return h.refuseData("unavailable")
 	}
 	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || st.Uid != uint32(os.Geteuid()) || info.Mode().Perm()&0022 != 0 {
+	if !ok || st.Uid != uint32(os.Geteuid()) {
 		data.Close()
-		return ErrHelper
+		return h.refuseData("foreign_owner")
+	}
+	if info.Mode().Perm()&0022 != 0 {
+		data.Close()
+		return h.refuseData("writable_by_others")
 	}
 	ch, unsubscribe, err := h.options.Native.EventBus().Subscribe("LaunchRestoreToolMessage")
 	if err != nil {
@@ -118,6 +122,13 @@ func (h *Helpers) Begin(parent context.Context, id uint64) error {
 	h.state = HelperState{Generation: id, State: "waiting"}
 	go h.loop(g, ch, unsubscribe)
 	return nil
+}
+
+// refuseData names why the private helper pipe directory stopped a generation.
+// The directory is a fixed product location; its path is not logged.
+func (h *Helpers) refuseData(reason string) error {
+	h.options.Logger.Error("restore_helper_directory_refused", "reason", reason)
+	return ErrHelper
 }
 func (h *Helpers) End(id uint64) error {
 	h.mu.Lock()
