@@ -204,7 +204,13 @@ function destinationCandidates(d: DestinationProgress, now: number): Candidate[]
         actions: { run: false, pause: true, resume: false },
         progress: {
           value: known,
-          text: pct(known) ?? 'This can take a while for large backups',
+          // total is only the engine's first estimate and never grows: show "x of y" while it holds,
+          // otherwise just the live count so the user can see that work continues.
+          text: counter
+            ? known !== undefined
+              ? `${pct(known)} · ${compactCount(counter.current)} of ${compactCount(counter.total)} index entries`
+              : `${compactCount(counter.current)} index entries read`
+            : 'This can take a while for large backups',
         },
       },
     })
