@@ -204,7 +204,7 @@ type ControlProps = {
 
 function unitLabel(unit: DurationUnit, amount: string) {
   const singular = amount.trim() === '1'
-  return { minutes: 'minute', hours: 'hour', days: 'day' }[unit] + (singular ? '' : 's')
+  return { seconds: 'second', minutes: 'minute', hours: 'hour', days: 'day' }[unit] + (singular ? '' : 's')
 }
 
 function DurationControl({
