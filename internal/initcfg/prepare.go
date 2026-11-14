@@ -112,6 +112,12 @@ func Prepare(options Options) error {
 		return ErrInit
 	} else if !info.IsDir() {
 		return refuse(options.Logger, "conf", "not_directory")
+	} else if added, err := addMissingDefaults(filepath.Join(options.Defaults, "conf"), conf); err != nil {
+		return refuse(options.Logger, "conf", "defaults_not_copied")
+	} else if added > 0 {
+		// A partial configuration, for example one that holds only jvm_args,
+		// would stop the engine at once. Existing files are never replaced.
+		options.Logger.Info("configuration_defaults_added", "files", added)
 	}
 	for _, name := range []string{"log", "cache", "var", "repository", "repository/metadata", ".crashplan", "diag"} {
 		path := filepath.Join(options.Root, name)
@@ -216,6 +222,36 @@ func Prepare(options Options) error {
 		options.Logger.Info("configuration_version_changed", "previous_version", old, "version", options.Version)
 	}
 	return nil
+}
+
+// addMissingDefaults copies each top-level default file that is absent from
+// conf. Existing entries of any type stay untouched.
+func addMissingDefaults(source, conf string) (int, error) {
+	entries, err := os.ReadDir(source)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	} else if err != nil {
+		return 0, ErrInit
+	}
+	added := 0
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		target := filepath.Join(conf, entry.Name())
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(source, entry.Name()))
+		if err != nil {
+			return added, ErrInit
+		}
+		if err := atomicWrite(target, data); err != nil {
+			return added, err
+		}
+		added++
+	}
+	return added, nil
 }
 
 func copyDefaults(source, destination string) error {

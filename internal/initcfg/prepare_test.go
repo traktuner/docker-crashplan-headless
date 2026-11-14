@@ -212,3 +212,22 @@ func mustStat(t *testing.T, path string) os.FileInfo {
 	}
 	return info
 }
+
+func TestPartialConfigurationReceivesMissingDefaultsOnly(t *testing.T) {
+	root := t.TempDir()
+	defaults := t.TempDir()
+	os.Mkdir(filepath.Join(defaults, "conf"), 0700)
+	os.WriteFile(filepath.Join(defaults, "conf", "default.service.xml"), []byte("<config/>"), 0600)
+	os.WriteFile(filepath.Join(defaults, "conf", "service.log.xml"), []byte("<default-log/>"), 0600)
+	os.Mkdir(filepath.Join(root, "conf"), 0700)
+	os.WriteFile(filepath.Join(root, "conf", "service.log.xml"), []byte("<user-log/>"), 0600)
+	if err := Prepare(Options{Root: root, Defaults: defaults, Version: "12.1.1", MountInfo: mountFixture(root)}); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(root, "conf", "default.service.xml")); string(data) != "<config/>" {
+		t.Fatal("missing default not added", string(data))
+	}
+	if data, _ := os.ReadFile(filepath.Join(root, "conf", "service.log.xml")); string(data) != "<user-log/>" {
+		t.Fatal("existing configuration file replaced", string(data))
+	}
+}
