@@ -155,6 +155,9 @@ func TestRememberedSourceIdentityStopsAnUnmountedShare(t *testing.T) {
 	if err := g.checkPins([]identity{{Mount: mountRecord{FS: "nfs4", Root: "/export", Device: "0:99"}}}); err != nil {
 		t.Fatal("same share refused", err)
 	}
+	if err := g.checkPins([]identity{{Mount: mountRecord{FS: "nfs", Root: "/export"}}}); err != nil {
+		t.Fatal("NFS version change treated as another source", err)
+	}
 	// The host share is not mounted: the bind now shows the parent filesystem.
 	parent := []identity{{Mount: mountRecord{FS: "ext4", Root: "/mnt/nas"}}}
 	if err := g.checkPins(parent); !errors.Is(err, SourceChanged) || !errors.Is(err, ErrNotReady) || g.Changed() != "/storage/nas" {

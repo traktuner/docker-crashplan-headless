@@ -90,6 +90,12 @@ func TestBusyDetectsAHeldLock(t *testing.T) {
 	if !Busy(path) {
 		t.Fatal("held lock not detected")
 	}
+	// Errors other than a lock conflict are left to the state store's lock.
+	link := t.TempDir() + "/engine.lock"
+	os.Symlink(path, link)
+	if Busy(link) {
+		t.Fatal("unopenable lock reported busy")
+	}
 }
 
 func TestTakeOwnershipLeavesOwnedTreeUnchanged(t *testing.T) {

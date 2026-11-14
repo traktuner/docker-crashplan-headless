@@ -91,7 +91,7 @@ func (g *Gate) checkPins(identities []identity) error {
 	}
 	changed := false
 	for i, root := range g.roots {
-		current := pin{FS: identities[i].Mount.FS, Root: identities[i].Mount.Root}
+		current := pin{FS: filesystemFamily(identities[i].Mount.FS), Root: identities[i].Mount.Root}
 		if saved, ok := known[root]; ok {
 			if saved != current {
 				g.changed = root
@@ -108,6 +108,15 @@ func (g *Gate) checkPins(identities []identity) error {
 		}
 	}
 	return nil
+}
+
+// filesystemFamily treats NFS versions as one filesystem, so a protocol
+// upgrade of the same share is not a different source.
+func filesystemFamily(fs string) string {
+	if fs == "nfs4" {
+		return "nfs"
+	}
+	return fs
 }
 
 // Changed names the source whose identity differs from the remembered one.

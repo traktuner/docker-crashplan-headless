@@ -39,11 +39,15 @@ func (i Identity) Root() bool { return i.UID == 0 }
 func Resolve(get func(string) string, logger *slog.Logger) Identity {
 	id := Identity{UID: os.Geteuid(), GID: os.Getegid(), Umask: -1}
 	if value := get("UMASK"); value != "" {
-		// The owner must keep full access to its own private files.
-		if mask, err := strconv.ParseUint(value, 8, 32); err == nil && mask <= 0777 && mask&0700 == 0 {
-			id.Umask = int(mask)
-		} else {
+		mask, err := strconv.ParseUint(value, 8, 32)
+		switch {
+		case err != nil || mask > 0777:
 			logger.Warn("user_setting_ignored", "item", "UMASK", "reason", "invalid_octal")
+		case mask&0700 != 0:
+			// The owner must keep full access to its own private files.
+			logger.Warn("user_setting_ignored", "item", "UMASK", "reason", "removes_owner_access")
+		default:
+			id.Umask = int(mask)
 		}
 	}
 	userID, groupID := get("USER_ID"), get("GROUP_ID")
