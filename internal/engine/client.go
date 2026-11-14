@@ -62,6 +62,7 @@ type Client struct {
 	progressAt      time.Time
 	progressRev     uint64
 	progressCache   []DestinationProgress
+	progressErr     error
 }
 
 func (c *Client) String() string   { return "engine.Client{session:redacted}" }

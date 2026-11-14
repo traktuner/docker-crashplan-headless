@@ -157,14 +157,20 @@ export const durationUnits = [
 ] as const
 export type DurationUnit = (typeof durationUnits)[number]['id']
 
-/** Picks the largest unit that represents the value exactly. */
-export function splitDuration(msValue: unknown): { amount: string; unit: DurationUnit } {
+/** Picks the largest allowed unit that represents the value exactly, else
+ * the smallest allowed unit (with a fraction if needed). */
+export function splitDuration(
+  msValue: unknown,
+  allowed: readonly DurationUnit[] = durationUnits.map((u) => u.id),
+): { amount: string; unit: DurationUnit } {
   const d = digits(msValue)
   const ms = d === undefined ? 0 : Number(d)
-  for (const unit of [...durationUnits].reverse()) {
+  const units = durationUnits.filter((u) => allowed.includes(u.id))
+  for (const unit of [...units].reverse()) {
     if (ms > 0 && ms % unit.ms === 0) return { amount: String(ms / unit.ms), unit: unit.id }
   }
-  return { amount: String(ms / 1000), unit: 'seconds' }
+  const smallest = units[0] ?? durationUnits[0]
+  return { amount: String(ms / smallest.ms), unit: smallest.id }
 }
 
 export function joinDuration(amount: string, unit: DurationUnit): string | undefined {

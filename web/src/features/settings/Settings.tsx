@@ -216,10 +216,12 @@ function DurationControl({
   prefix,
 }: ControlProps) {
   const factor = field.unit === 'minutes' ? 60_000 : 1
+  const units: DurationUnit[] =
+    factor === 1 ? ['seconds', 'minutes', 'hours', 'days'] : ['minutes', 'hours', 'days']
   const editor = useEditor(value, (v) => {
     const n = numberText(v)
     if (n === undefined) return { amount: '', unit: 'hours' as DurationUnit }
-    return splitDuration(factor === 1 ? n : Number(n) * factor)
+    return splitDuration(factor === 1 ? n : Number(n) * factor, units)
   })
   const { amount, unit } = editor.local
   const update = (next: { amount: string; unit: DurationUnit }) => {
@@ -256,7 +258,7 @@ function DurationControl({
             update({ amount, unit: e.target.value as DurationUnit })
           }
         >
-          {(['minutes', 'hours', 'days'] as const).map((u) => (
+          {units.map((u) => (
             <option key={u} value={u}>
               {unitLabel(u, amount)}
             </option>

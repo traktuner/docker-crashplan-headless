@@ -71,15 +71,35 @@ func (c *Client) BackupProgress(ctx context.Context) ([]DestinationProgress, err
 	ctx = c.operationContext(ctx)
 	c.progressMu.Lock()
 	defer c.progressMu.Unlock()
-	revision := c.SessionRevision()
-	if c.progressCache != nil && c.progressRev == revision && time.Since(c.progressAt) < progressFresh {
-		return c.progressCache, nil
+	if ctx.Err() != nil {
+		return nil, ErrUnavailable
 	}
+	revision := c.SessionRevision()
+	if c.progressRev == revision && time.Since(c.progressAt) < progressFresh && (c.progressCache != nil || c.progressErr != nil) {
+		return c.progressCache, c.progressErr
+	}
+	out, err := c.readProgress(ctx)
+	c.progressCache, c.progressErr, c.progressAt, c.progressRev = out, err, time.Now(), revision
+	return out, err
+}
+
+func (c *Client) readProgress(ctx context.Context) ([]DestinationProgress, error) {
 	// A closed page must not abandon a native request halfway: the engine
 	// answer is still read, so the response lane stays in step.
-	native, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+	native, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	devices, err := c.Devices(native)
+	var devices []Device
+	_, err := c.legacyProbe(native, "ComputersMessage", "GET", "/v0/GetComputers", nil, func(raw []byte) probeResult {
+		decoded, e := restoreResponse(raw, nil, "ComputersMessage")
+		if e != nil {
+			return probeMismatch
+		}
+		if devices, e = parseDevices(decoded); e != nil {
+			return probeMismatch
+		}
+		// The request has no parameters: any computer list answers it.
+		return probeInStep
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +115,6 @@ func (c *Client) BackupProgress(ctx context.Context) ([]DestinationProgress, err
 		progress.Name = device.Name
 		out = append(out, progress)
 	}
-	c.progressCache, c.progressAt, c.progressRev = out, time.Now(), revision
 	return out, nil
 }
 
@@ -113,19 +132,34 @@ func progressError(err error) string {
 func (c *Client) destinationProgress(ctx context.Context, target string) (DestinationProgress, error) {
 	body, _ := json.Marshal(map[string]string{"targetId": target})
 	var parsed DestinationProgress
-	raw, err := c.legacyProbe(ctx, "BackupStatsMessage", "PUT", "/v0/GetBackupStats", body, func(raw []byte) bool {
+	var parseErr error
+	_, err := c.legacyProbe(ctx, "BackupStatsMessage", "PUT", "/v0/GetBackupStats", body, func(raw []byte) probeResult {
 		decoded, e := restoreResponse(raw, nil, "BackupStatsMessage")
 		if e != nil {
-			return false
+			parseErr = e
+			return probeMismatch
 		}
-		p, e := parseDestinationProgress(decoded, target)
-		parsed = p
-		return e == nil
+		if parsed, parseErr = parseDestinationProgress(decoded, target); parseErr != nil {
+			return probeMismatch
+		}
+		// Only an answer that names this target proves the lane is in step;
+		// an empty one ("no stats yet") neither proves nor disproves it.
+		var named struct {
+			Stats *struct {
+				Target json.RawMessage `json:"targetId"`
+			} `json:"backupStats"`
+		}
+		if json.Unmarshal(decoded, &named) == nil && named.Stats != nil && decimal(named.Stats.Target) == target {
+			return probeInStep
+		}
+		return probeUnknown
 	})
+	if parseErr != nil {
+		return DestinationProgress{}, parseErr
+	}
 	if err != nil {
 		return DestinationProgress{}, err
 	}
-	_ = raw
 	return parsed, nil
 }
 
@@ -133,7 +167,15 @@ func (c *Client) destinationProgress(ctx context.Context, target string) (Destin
 // marks the lane uncertain like any legacy request, but a later answer that
 // verifiably belongs to this request (matching target) clears it again, so a
 // closed page or one timeout does not disable the class until a restart.
-func (c *Client) legacyProbe(ctx context.Context, class, method, path string, body []byte, verify func([]byte) bool) ([]byte, error) {
+type probeResult int
+
+const (
+	probeMismatch probeResult = iota // not this request's answer: lane uncertain
+	probeUnknown                     // usable, but proves nothing: lane unchanged
+	probeInStep                      // verifiably this request's answer: lane certain
+)
+
+func (c *Client) legacyProbe(ctx context.Context, class, method, path string, body []byte, verify func([]byte) probeResult) ([]byte, error) {
 	c.mu.Lock()
 	if ctx.Value(generationKey{}) == nil && c.lifetime != nil {
 		ctx = context.WithValue(ctx, generationKey{}, c.lifetime.Value(generationKey{}))
@@ -168,12 +210,16 @@ func (c *Client) legacyProbe(ctx context.Context, class, method, path string, bo
 		}
 		return raw, err
 	}
-	if verify(raw) {
+	switch verify(raw) {
+	case probeInStep:
 		lane.uncertain = false
 		return raw, nil
+	case probeUnknown:
+		return raw, nil
+	default:
+		lane.uncertain = true
+		return raw, ErrProtocol
 	}
-	lane.uncertain = true
-	return raw, ErrProtocol
 }
 
 func parseDestinationProgress(raw []byte, target string) (DestinationProgress, error) {

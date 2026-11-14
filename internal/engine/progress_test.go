@@ -98,3 +98,35 @@ func TestProgressLaneRecoversAfterLostAnswer(t *testing.T) {
 		t.Fatal("lane still uncertain after a verified answer")
 	}
 }
+
+func TestProgressDeviceLaneRecovers(t *testing.T) {
+	fail := true
+	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/GetComputers":
+			if fail {
+				w.WriteHeader(500)
+				return
+			}
+			io.WriteString(w, `{"ComputersMessage":{"computers":[{"peerId":"7","properties":{"ME":"true"}}]}}`)
+		default:
+			t.Fatal(r.URL.Path)
+		}
+	})
+	c.SetToken("fixture")
+	if _, err := c.BackupProgress(context.Background()); err == nil {
+		t.Fatal("want error")
+	}
+	// The error is shared for the fresh window instead of refetching.
+	if _, err := c.BackupProgress(context.Background()); err == nil {
+		t.Fatal("want cached error")
+	}
+	fail = false
+	c.progressAt = time.Time{}
+	if out, err := c.BackupProgress(context.Background()); err != nil || len(out) != 0 {
+		t.Fatalf("%v %v", out, err)
+	}
+	if _, err := c.Devices(context.Background()); err != nil {
+		t.Fatalf("device lane still blocked: %v", err)
+	}
+}

@@ -64,6 +64,10 @@ func (c *Client) Devices(ctx context.Context) ([]Device, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseDevices(raw)
+}
+
+func parseDevices(raw []byte) ([]Device, error) {
 	var wire struct {
 		Computers *[]struct {
 			ID          json.Number                `json:"peerId"`

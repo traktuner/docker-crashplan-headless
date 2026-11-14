@@ -27,7 +27,7 @@ export function useBackupStatus(signedIn: boolean | undefined) {
     queryFn: () => api.backupProgress(),
     enabled: signedIn === true,
     refetchInterval: (query) =>
-      query.state.data?.some((d) => d.validating || d.backingUp || d.maintenance || d.sets.some((s) => s.scanning))
+      query.state.data?.some((d) => d.error || d.validating || d.backingUp || d.maintenance || d.sets.some((s) => s.scanning))
         ? 3_000
         : 15_000,
   })
