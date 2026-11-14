@@ -82,3 +82,22 @@ func TestLeavingThePageDoesNotAbandonARead(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRejectedArchiveQueryKeepsTheClassUsable(t *testing.T) {
+	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		query := body["backupQueryData"]
+		query["errorCode"] = "NOT_FOUND"
+		encoded, _ := json.Marshal(query)
+		fmt.Fprintf(w, `{"backupQueryData":%s,"versionSet":{"versions":[]}}`, encoded)
+	})
+	c.SetToken("fixture")
+	q := ArchiveQuery{SourceID: "7", TargetID: "8", BackupSetID: "1", At: "0", FileID: "AQAAAAAAAAAAAAAAAAAAAA=="}
+	if _, err := c.ArchiveVersions(context.Background(), q); !errors.Is(err, ErrRejected) {
+		t.Fatal("rejection not reported as rejection", err)
+	}
+	if lane := c.legacy["GetAllVersionsResultMessage"]; lane == nil || lane.uncertain {
+		t.Fatal("a rejected but matching answer made the class uncertain")
+	}
+}

@@ -89,7 +89,7 @@ func (c *Client) readProgress(ctx context.Context) ([]DestinationProgress, error
 	native, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	var devices []Device
-	_, err := c.legacyProbe(native, "ComputersMessage", "GET", "/v0/GetComputers", nil, func(raw []byte) probeResult {
+	_, err := c.legacyProbe(native, "ComputersMessage", "GET", "/v0/GetComputers", nil, true, func(raw []byte) probeResult {
 		decoded, e := restoreResponse(raw, nil, "ComputersMessage")
 		if e != nil {
 			return probeMismatch
@@ -133,7 +133,7 @@ func (c *Client) destinationProgress(ctx context.Context, target string) (Destin
 	body, _ := json.Marshal(map[string]string{"targetId": target})
 	var parsed DestinationProgress
 	var parseErr error
-	_, err := c.legacyProbe(ctx, "BackupStatsMessage", "PUT", "/v0/GetBackupStats", body, func(raw []byte) probeResult {
+	_, err := c.legacyProbe(ctx, "BackupStatsMessage", "PUT", "/v0/GetBackupStats", body, true, func(raw []byte) probeResult {
 		decoded, e := restoreResponse(raw, nil, "BackupStatsMessage")
 		if e != nil {
 			parseErr = e
@@ -163,14 +163,14 @@ func (c *Client) destinationProgress(ctx context.Context, target string) (Destin
 	return parsed, nil
 }
 
-// legacyProbe is legacyRequest for read-only status classes. A lost answer
-// marks the lane uncertain like any legacy request, but a later answer that
-// verifiably belongs to this request (matching target) clears it again, so a
-// closed page or one timeout does not disable the class until a restart.
 // legacyRead is the recoverable path for read-only legacy classes. check
 // receives the decoded answer and says whether it proves the lane in step.
 func (c *Client) legacyRead(ctx context.Context, class, method, path string, body []byte, check func([]byte) probeResult) ([]byte, error) {
-	return c.legacyProbe(ctx, class, method, path, body, func(raw []byte) probeResult {
+	return c.legacyReadAuth(ctx, class, method, path, body, true, check)
+}
+
+func (c *Client) legacyReadAuth(ctx context.Context, class, method, path string, body []byte, auth bool, check func([]byte) probeResult) ([]byte, error) {
+	return c.legacyProbe(ctx, class, method, path, body, auth, func(raw []byte) probeResult {
 		decoded, err := restoreResponse(raw, nil, class)
 		if err != nil {
 			if errors.Is(err, ErrProtocol) {
@@ -194,7 +194,11 @@ const (
 	probeInStep                      // verifiably this request's answer: lane certain
 )
 
-func (c *Client) legacyProbe(ctx context.Context, class, method, path string, body []byte, verify func([]byte) probeResult) ([]byte, error) {
+// legacyProbe is legacyRequest for read-only status classes. A lost answer
+// marks the lane uncertain like any legacy request, but a later answer that
+// verifiably belongs to this request (matching target) clears it again, so a
+// closed page or one timeout does not disable the class until a restart.
+func (c *Client) legacyProbe(ctx context.Context, class, method, path string, body []byte, auth bool, verify func([]byte) probeResult) ([]byte, error) {
 	c.mu.Lock()
 	if ctx.Value(generationKey{}) == nil && c.lifetime != nil {
 		ctx = context.WithValue(ctx, generationKey{}, c.lifetime.Value(generationKey{}))
@@ -217,11 +221,17 @@ func (c *Client) legacyProbe(ctx context.Context, class, method, path string, bo
 	if !c.currentGeneration(ctx) || ctx.Err() != nil {
 		return nil, ErrUnavailable
 	}
-	// Once sent, the answer is always read, even if the browser left: an
-	// abandoned answer is what makes a lane uncertain.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	// Once sent, the answer is read even if the caller is cancelled (a closed
+	// page, an ended worker wait): an abandoned answer is what makes a lane
+	// uncertain. The caller's deadline still applies; the HTTP client caps
+	// every request at its own timeout as well.
+	deadline := time.Now().Add(2 * time.Minute)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	ctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
 	defer cancel()
-	raw, err := c.request(ctx, method, path, body, true, false)
+	raw, err := c.request(ctx, method, path, body, auth, false)
 	if err == nil && !c.currentGeneration(ctx) {
 		err = ErrUnavailable
 	}

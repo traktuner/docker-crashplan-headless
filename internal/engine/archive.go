@@ -128,7 +128,9 @@ func (c *Client) BrowseArchive(ctx context.Context, credentials RestoreCredentia
 	}
 	raw, err := c.legacyRead(ctx, "GetChildrenFileVersionsResultMessage", "POST", "/v0/GetChildrenFileVersions", q.body(credentials.key), func(decoded []byte) probeResult {
 		// The answer echoes its query; only this query's answer proves the lane.
-		if match, e := matchArchiveQuery(q, decoded); e == nil && match {
+		// A rejected query still echoes this query: in step, and the
+		// caller reports the rejection.
+		if match, _ := matchArchiveQuery(q, decoded); match {
 			return probeInStep
 		}
 		return probeMismatch
@@ -195,7 +197,9 @@ func (c *Client) ArchiveVersions(ctx context.Context, in ArchiveQuery) ([]Archiv
 		return nil, err
 	}
 	raw, err := c.legacyRead(ctx, "GetAllVersionsResultMessage", "PUT", "/v0/GetAllVersions", q.body(""), func(decoded []byte) probeResult {
-		if match, e := matchArchiveQuery(q, decoded); e == nil && match {
+		// A rejected query still echoes this query: in step, and the
+		// caller reports the rejection.
+		if match, _ := matchArchiveQuery(q, decoded); match {
 			return probeInStep
 		}
 		return probeMismatch
