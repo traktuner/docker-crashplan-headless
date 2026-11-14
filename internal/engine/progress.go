@@ -3,8 +3,10 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"strings"
+	"time"
 )
 
 // DestinationProgress is what the desktop app shows per destination: the
@@ -22,6 +24,8 @@ type DestinationProgress struct {
 	OutOfSpace   bool               `json:"outOfSpace"`
 	RateBytes    string             `json:"completedRateBytesPerSecond"`
 	Sets         []SetProgress      `json:"sets"`
+	// Error is set when this destination could not be read; others still are.
+	Error string `json:"error,omitempty"`
 }
 
 // ProgressCounter carries exact decimal counts and a percentage clamped to
@@ -50,15 +54,32 @@ type SetProgress struct {
 	RemainingBytes string `json:"remainingBytes"`
 	LastBackup     string `json:"lastBackup"`
 	NextBackup     string `json:"nextBackup"`
-	PausedUntil    string `json:"resumeInMs"`
+	// ResumeTime is the epoch millisecond time a paused backup resumes; 0 or
+	// a past time means not paused (desktop: resumeTime - now).
+	ResumeTime string `json:"resumeTime"`
 	// SendingPath is the file being transferred right now, as in the desktop status line.
 	SendingPath string `json:"sendingPath,omitempty"`
 }
 
+// progressFresh is how long one engine reading serves every open page.
+const progressFresh = 2 * time.Second
+
 // BackupProgress reads the progress of every backup destination of this device.
+// One reading is shared by all callers for a short time, so several open pages
+// do not multiply the engine requests.
 func (c *Client) BackupProgress(ctx context.Context) ([]DestinationProgress, error) {
 	ctx = c.operationContext(ctx)
-	devices, err := c.Devices(ctx)
+	c.progressMu.Lock()
+	defer c.progressMu.Unlock()
+	revision := c.SessionRevision()
+	if c.progressCache != nil && c.progressRev == revision && time.Since(c.progressAt) < progressFresh {
+		return c.progressCache, nil
+	}
+	// A closed page must not abandon a native request halfway: the engine
+	// answer is still read, so the response lane stays in step.
+	native, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+	defer cancel()
+	devices, err := c.Devices(native)
 	if err != nil {
 		return nil, err
 	}
@@ -67,24 +88,92 @@ func (c *Client) BackupProgress(ctx context.Context) ([]DestinationProgress, err
 		if !device.Target || device.Deleted || device.Self {
 			continue
 		}
-		progress, err := c.destinationProgress(ctx, device.ID)
+		progress, err := c.destinationProgress(native, device.ID)
 		if err != nil {
-			return nil, err
+			progress = DestinationProgress{TargetID: device.ID, Sets: []SetProgress{}, RateBytes: "0", Error: progressError(err)}
 		}
 		progress.Name = device.Name
 		out = append(out, progress)
 	}
+	c.progressCache, c.progressAt, c.progressRev = out, time.Now(), revision
 	return out, nil
+}
+
+func progressError(err error) string {
+	switch {
+	case errors.Is(err, ErrUnauthorized):
+		return "NATIVE_AUTHORIZATION_REQUIRED"
+	case errors.Is(err, ErrProtocol):
+		return "NATIVE_PROTOCOL_MISMATCH"
+	default:
+		return "NATIVE_ENGINE_UNAVAILABLE"
+	}
 }
 
 func (c *Client) destinationProgress(ctx context.Context, target string) (DestinationProgress, error) {
 	body, _ := json.Marshal(map[string]string{"targetId": target})
-	raw, err := c.legacyRequest(ctx, "BackupStatsMessage", "PUT", "/v0/GetBackupStats", body, true, false)
-	raw, err = restoreResponse(raw, err, "BackupStatsMessage")
+	var parsed DestinationProgress
+	raw, err := c.legacyProbe(ctx, "BackupStatsMessage", "PUT", "/v0/GetBackupStats", body, func(raw []byte) bool {
+		decoded, e := restoreResponse(raw, nil, "BackupStatsMessage")
+		if e != nil {
+			return false
+		}
+		p, e := parseDestinationProgress(decoded, target)
+		parsed = p
+		return e == nil
+	})
 	if err != nil {
 		return DestinationProgress{}, err
 	}
-	return parseDestinationProgress(raw, target)
+	_ = raw
+	return parsed, nil
+}
+
+// legacyProbe is legacyRequest for read-only status classes. A lost answer
+// marks the lane uncertain like any legacy request, but a later answer that
+// verifiably belongs to this request (matching target) clears it again, so a
+// closed page or one timeout does not disable the class until a restart.
+func (c *Client) legacyProbe(ctx context.Context, class, method, path string, body []byte, verify func([]byte) bool) ([]byte, error) {
+	c.mu.Lock()
+	if ctx.Value(generationKey{}) == nil && c.lifetime != nil {
+		ctx = context.WithValue(ctx, generationKey{}, c.lifetime.Value(generationKey{}))
+	}
+	if c.legacy == nil {
+		c.legacy = make(map[string]*legacyLane)
+	}
+	lane := c.legacy[class]
+	if lane == nil {
+		lane = &legacyLane{gate: make(chan struct{}, 1)}
+		c.legacy[class] = lane
+	}
+	c.mu.Unlock()
+	select {
+	case lane.gate <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ErrUnavailable
+	}
+	defer func() { <-lane.gate }()
+	if !c.currentGeneration(ctx) || ctx.Err() != nil {
+		return nil, ErrUnavailable
+	}
+	raw, err := c.request(ctx, method, path, body, true, false)
+	if err == nil && !c.currentGeneration(ctx) {
+		err = ErrUnavailable
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err != nil {
+		if !errors.Is(err, ErrUnauthorized) && !errors.Is(err, ErrNotDispatched) {
+			lane.uncertain = true
+		}
+		return raw, err
+	}
+	if verify(raw) {
+		lane.uncertain = false
+		return raw, nil
+	}
+	lane.uncertain = true
+	return raw, ErrProtocol
 }
 
 func parseDestinationProgress(raw []byte, target string) (DestinationProgress, error) {
@@ -158,7 +247,7 @@ func parseDestinationProgress(raw []byte, target string) (DestinationProgress, e
 		item := SetProgress{BackupSetID: id, Scanning: set.Scanning, Selected: set.Selected,
 			FilesScanned: orZero(decimal(set.Files)), BytesScanned: orZero(decimal(set.Bytes)),
 			RemainingFiles: orZero(decimal(set.RemFiles)), RemainingBytes: orZero(decimal(set.RemBytes)),
-			LastBackup: signed(set.Last), NextBackup: signed(set.Next), PausedUntil: signed(set.Resume)}
+			LastBackup: signed(set.Last), NextBackup: signed(set.Next), ResumeTime: signed(set.Resume)}
 		if set.Sending != nil {
 			var file struct {
 				Backup struct {

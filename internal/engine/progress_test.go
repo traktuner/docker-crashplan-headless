@@ -1,8 +1,12 @@
 package engine
 
 import (
+	"context"
 	"errors"
+	"io"
+	"net/http"
 	"testing"
+	"time"
 )
 
 func TestDestinationProgressReadsSynchronization(t *testing.T) {
@@ -60,5 +64,37 @@ func TestSettingsMismatchNamesTheField(t *testing.T) {
 	var field *FieldError
 	if !errors.As(err, &field) || field.Field != "locale" || !errors.Is(err, ErrProtocol) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestProgressLaneRecoversAfterLostAnswer(t *testing.T) {
+	fail := true
+	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/GetComputers":
+			io.WriteString(w, `{"ComputersMessage":{"computers":[{"peerId":"7","properties":{"ME":"true"}},{"peerId":"9","name":"Cloud","target":true,"availableTarget":true,"properties":{"CPC":"true"}}]}}`)
+		case "/v0/GetBackupStats":
+			if fail {
+				w.WriteHeader(500)
+				return
+			}
+			io.WriteString(w, `{"backupStats":{"targetId":9,"validating":true,"syncProgressStats":{"current":1,"total":4,"files":true}}}`)
+		default:
+			t.Fatal(r.URL.Path)
+		}
+	})
+	c.SetToken("fixture")
+	first, err := c.BackupProgress(context.Background())
+	if err != nil || len(first) != 1 || first[0].Error == "" {
+		t.Fatalf("one failing destination must not fail the page: %+v %v", first, err)
+	}
+	fail = false
+	c.progressAt = time.Time{}
+	second, err := c.BackupProgress(context.Background())
+	if err != nil || len(second) != 1 || second[0].Error != "" || second[0].Sync == nil || second[0].Sync.Percent != 25 || !second[0].Sync.Files {
+		t.Fatalf("lane did not recover: %+v %v", second, err)
+	}
+	if c.legacy["BackupStatsMessage"].uncertain {
+		t.Fatal("lane still uncertain after a verified answer")
 	}
 }

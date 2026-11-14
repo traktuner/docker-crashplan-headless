@@ -150,6 +150,7 @@ export function words(id: string): string {
 
 /** Duration units for editing millisecond settings. */
 export const durationUnits = [
+  { id: 'seconds', label: 'seconds', ms: 1_000 },
   { id: 'minutes', label: 'minutes', ms: 60_000 },
   { id: 'hours', label: 'hours', ms: 3_600_000 },
   { id: 'days', label: 'days', ms: 86_400_000 },
@@ -163,8 +164,7 @@ export function splitDuration(msValue: unknown): { amount: string; unit: Duratio
   for (const unit of [...durationUnits].reverse()) {
     if (ms > 0 && ms % unit.ms === 0) return { amount: String(ms / unit.ms), unit: unit.id }
   }
-  const minutes = ms / 60_000
-  return { amount: String(Math.round(minutes * 100) / 100), unit: 'minutes' }
+  return { amount: String(ms / 1000), unit: 'seconds' }
 }
 
 export function joinDuration(amount: string, unit: DurationUnit): string | undefined {

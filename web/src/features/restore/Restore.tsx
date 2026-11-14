@@ -92,8 +92,9 @@ function ItemDetails({
             <select
               className="select"
               disabled={disabled}
-              value={selection?.timestamp ?? ''}
+              value={selection && selection.timestamp !== query.at ? selection.timestamp : ''}
               onChange={(e) => {
+                if (!e.target.value) return onVersion(query.at, item.isFolder)
                 const v = versions.data?.find((x) => x.timestamp === e.target.value)
                 if (v) onVersion(v.timestamp, v.isFolder)
               }}
@@ -302,7 +303,7 @@ export function Restore() {
       <ErrorNotice error={devices.error ?? archiveSets.error} />
       <Section title="Restore from">
         <Row title="Device" detail="Every device of your CrashPlan account can be restored here.">
-          <select className="select" aria-label="Device" value={source} onChange={(e) => setSource(e.target.value)}>
+          <select className="select" aria-label="Device" value={source} disabled={!!attempt} onChange={(e) => setSource(e.target.value)}>
             {!source && <option value="">Choose a device</option>}
             {sources.map((d) => (
               <option key={String(d.id)} value={String(d.id)}>
@@ -315,7 +316,7 @@ export function Restore() {
           {destinations.length === 1 ? (
             <span className="row-value">{destinations[0]!.name}</span>
           ) : (
-            <select className="select" aria-label="Backup destination" value={destination} onChange={(e) => setDestination(e.target.value)}>
+            <select className="select" aria-label="Backup destination" value={destination} disabled={!!attempt} onChange={(e) => setDestination(e.target.value)}>
               {!destination && <option value="">Choose a destination</option>}
               {destinations.map((d) => (
                 <option key={String(d.id)} value={String(d.id)}>
@@ -327,7 +328,7 @@ export function Restore() {
         </Row>
         {sets && sets.length > 1 && (
           <Row title="Backup set">
-            <select className="select" aria-label="Backup set" value={set} onChange={(e) => setSet(e.target.value)}>
+            <select className="select" aria-label="Backup set" value={set} disabled={!!attempt} onChange={(e) => setSet(e.target.value)}>
               {sets.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name || 'Backup set'}
@@ -340,6 +341,7 @@ export function Restore() {
           <Segmented
             label="Show files as of"
             value={when}
+            disabled={!!attempt}
             onChange={setWhen}
             options={[
               { value: 'latest', label: 'Latest backup' },
@@ -347,11 +349,11 @@ export function Restore() {
             ]}
           />
           {when === 'date' && (
-            <input className="input" type="datetime-local" aria-label="Date and time" value={at} onChange={(e) => setAt(e.target.value)} />
+            <input className="input" type="datetime-local" aria-label="Date and time" value={at} disabled={!!attempt} onChange={(e) => setAt(e.target.value)} />
           )}
         </Row>
         <Row title="Include deleted files" detail="Also show files that were deleted from the device.">
-          <Switch label="Include deleted files" checked={includeDeleted} onChange={setIncludeDeleted} />
+          <Switch label="Include deleted files" checked={includeDeleted} disabled={!!attempt} onChange={setIncludeDeleted} />
         </Row>
       </Section>
 
@@ -549,13 +551,14 @@ export function Restore() {
         </Section>
       )}
 
-      {query && selected > 0 && (
+      {query && (selected > 0 || attempt) && (
         <div ref={restoreSection}>
           <Section title="Restore to">
             <form noValidate onSubmit={submit}>
               <Row title="Location">
                 <Segmented
                   label="Location"
+                  disabled={!!attempt}
                   value={restoreMode}
                   onChange={setRestoreMode}
                   options={[
@@ -589,7 +592,7 @@ export function Restore() {
                     )}
                   </Row>
                   <Row title="Subfolder" detail="Optional. Must already exist inside the restore folder.">
-                    <input className="input" value={relative} placeholder="e.g. 2026-11-14" disabled={!!attempt} onChange={(e) => setRelative(e.target.value)} />
+                    <input className="input" aria-label="Subfolder" value={relative} placeholder="e.g. 2026-11-14" disabled={!!attempt} onChange={(e) => setRelative(e.target.value)} />
                   </Row>
                 </>
               )}
@@ -620,6 +623,11 @@ export function Restore() {
                     <Notice tone="warning">No restore folder is mounted. Add a writable volume at /restore to the container.</Notice>
                   )}
                   <ErrorNotice error={start.error} />
+                  {attempt && (
+                    <span className="row-detail">
+                      Request <code>{attempt.requestId}</code>
+                    </span>
+                  )}
                   {attempt && !start.isPending && start.data?.state === 'accepted' && (
                     <Notice tone="success">CrashPlan started the restore. Follow it under Restores below.</Notice>
                   )}
@@ -633,6 +641,7 @@ export function Restore() {
                       type="button"
                       className="btn"
                       onClick={() => {
+                        if (!confirm('Start a new restore selection? The previous request stays listed under Restores.')) return
                         setAttempt(undefined)
                         start.reset()
                         setSelection({})

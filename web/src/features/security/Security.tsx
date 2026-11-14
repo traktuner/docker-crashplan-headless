@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { restoreSources } from '../restore/model'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../shared/api'
 import type {
@@ -80,7 +81,7 @@ function Unlock() {
     input.type === 'CustomKey'
       ? !hasMaterial({ key: input.secret, passphrase: input.passphrase })
       : !input.secret
-  const sources = devices.data?.filter((d) => d.source || d.self) ?? []
+  const sources = restoreSources(devices.data)
 
   return (
     <>

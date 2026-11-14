@@ -58,6 +58,10 @@ type Client struct {
 	archiveKeys     map[string]string
 	searchMu        sync.Mutex
 	searchUncertain bool
+	progressMu      sync.Mutex
+	progressAt      time.Time
+	progressRev     uint64
+	progressCache   []DestinationProgress
 }
 
 func (c *Client) String() string   { return "engine.Client{session:redacted}" }

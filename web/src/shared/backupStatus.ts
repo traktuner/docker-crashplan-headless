@@ -92,9 +92,19 @@ export function backupStatus(input: {
       detail: 'Backups resume after you sign in to your CrashPlan account.',
       tone: 'warn',
     }
-  const all = input.progress
-  if (!all || input.engineReady === undefined)
+  const read = input.progress
+  if (!read || input.engineReady === undefined)
     return { ...base, kind: 'checking', title: 'Checking status…', detail: '', tone: 'idle', busy: true }
+  const all = read.filter((d) => !d.error)
+  if (all.length === 0 && read.length > 0)
+    return {
+      ...base,
+      kind: 'checking',
+      title: 'Status temporarily unavailable',
+      detail: 'CrashPlan did not answer the status request. It is asked again in a few seconds.',
+      tone: 'idle',
+      busy: true,
+    }
   if (all.length === 0)
     return {
       ...base,
@@ -201,13 +211,14 @@ export function backupStatus(input: {
     }
   }
 
-  const paused = sets.find(({ s }) => Number(s.resumeInMs) > 0)
+  const now = Date.now()
+  const paused = sets.find(({ s }) => Number(s.resumeTime) > now)
   if (paused) {
     return {
       ...base,
       kind: 'paused',
       title: 'Backup paused',
-      detail: `Backup resumes automatically in ${duration(paused.s.resumeInMs)}.`,
+      detail: `Backup resumes automatically in ${duration(String(Number(paused.s.resumeTime) - now))}.`,
       tone: 'warn',
       destination: paused.d.name,
     }

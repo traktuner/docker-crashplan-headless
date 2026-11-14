@@ -202,7 +202,7 @@ export function Activity({ signedIn }: { signedIn: boolean | undefined }) {
         >
           {(sets.data?.length ?? 0) > 1 && (
             <Row title="Backup set">
-              <select className="select" value={scope} onChange={(e) => setScope(e.target.value)}>
+              <select className="select" aria-label="Backup set" value={scope} onChange={(e) => setScope(e.target.value)}>
                 <option value="">All backup sets</option>
                 {sets.data?.map((item) => (
                   <option key={String(item.id)} value={String(item.id)}>

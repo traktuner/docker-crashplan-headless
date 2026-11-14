@@ -373,7 +373,8 @@ export interface SetProgress {
   remainingBytes: string
   lastBackup: string
   nextBackup: string
-  resumeInMs: string
+  /** Epoch ms when a paused backup resumes; 0 or past = not paused. */
+  resumeTime: string
   sendingPath?: string
 }
 export interface DestinationProgress {
@@ -387,6 +388,8 @@ export interface DestinationProgress {
   outOfSpace: boolean
   completedRateBytesPerSecond: string
   sets: SetProgress[]
+  /** Set when this destination could not be read. */
+  error?: string
 }
 function plain(value: unknown): unknown {
   if (isLosslessNumber(value)) return value.toString()
