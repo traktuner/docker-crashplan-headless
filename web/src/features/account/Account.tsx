@@ -1,5 +1,5 @@
 import { DeviceManagement } from '../destinations/Devices'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, ArrowRight } from 'lucide-react'
@@ -25,13 +25,22 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
     id: string
     providers: { name: string; url: string }[]
   }>()
+  // An engine that is still signed in knows its account and server, as in the
+  // desktop app: the username is fixed and no server lookup is needed.
+  const knownAccount =
+    setup.data?.authenticated === true ? text(setup.data?.username) : ''
+  const knownServer = text(setup.data?.authorityFullAddress)
   useEffect(() => {
-    if (setup.data && !info.serverAddress)
-      setInfo((old) => ({
-        ...old,
-        serverAddress: text(setup.data?.authorityFullAddress),
-      }))
-  }, [setup.data, info.serverAddress])
+    if (!setup.data) return
+    setInfo((old) => ({
+      ...old,
+      serverAddress: old.serverAddress || knownServer,
+      username: knownAccount || old.username,
+    }))
+  }, [setup.data, knownAccount, knownServer])
+  // Password sign-in only for accounts without verification code; the
+  // desktop app always uses the browser.
+  const [usePassword, setUsePassword] = useState(false)
   const ssoState = useQuery({
     queryKey: ['sso', sso?.id],
     queryFn: () => api.accountSSOStatus(sso!.id),
@@ -53,7 +62,7 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
   const configuration = useMutation({
     mutationFn: async () => {
       let resolved = info
-      if (!manualServer) {
+      if (!manualServer && !(knownServer && info.serverAddress === knownServer)) {
         try {
           const found = await api.accountAuthority(info.username)
           resolved = { ...info, serverAddress: found.serverAddress }
@@ -72,8 +81,10 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
     },
     onSuccess: ({ config, resolved }) => {
       setLoginType(config.loginType)
-      // Browser sign-in (password and TOTP on the CrashPlan page) starts at once.
-      if (config.loginType === 'cloud_sso') beginSSO.mutate(resolved)
+      // Browser sign-in (password and TOTP on the CrashPlan page) starts at
+      // once for every login type, as in the desktop app.
+      if (!(usePassword && config.loginType === 'local'))
+        beginSSO.mutate(resolved)
     },
   })
   const login = useMutation({
@@ -104,6 +115,21 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
     mutationFn: () => api.discardSSO(sso!.id, ssoState.data!.assertionId!),
     onSuccess: () => { void client.invalidateQueries({ queryKey: ['sso', sso?.id] }) },
   })
+  // Complete by itself when CrashPlan returns the entered account, as the
+  // desktop app does; a different account still needs explicit confirmation.
+  const confirmed = useRef('')
+  useEffect(() => {
+    const state = ssoState.data
+    if (
+      state?.state === 'confirm' &&
+      !state.differs &&
+      state.assertionId &&
+      confirmed.current !== state.assertionId
+    ) {
+      confirmed.current = state.assertionId
+      confirmSSO.mutate()
+    }
+  }, [ssoState.data, confirmSSO])
   function field(name: keyof LoginInfo, value: string | boolean) {
     setInfo((old) => ({ ...old, [name]: value }))
     setLoginType(undefined)
@@ -112,7 +138,7 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
   function submit(e: FormEvent) {
     e.preventDefault()
     if (!loginType) configuration.mutate()
-    else if (loginType === 'local') login.mutate()
+    else if (loginType === 'local' && usePassword) login.mutate()
     else beginSSO.mutate(info)
   }
   return (
@@ -127,7 +153,7 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
             <p>
               <strong>Sign in to CrashPlan to continue.</strong>{' '}
               {setup.data?.authenticated
-                ? 'CrashPlan is still signed in on this device and backups keep running. Enter your CrashPlan password once so this interface can manage it.'
+                ? 'CrashPlan is still signed in on this device and backups keep running. Sign in once more so this interface can manage it.'
                 : 'This device has no active CrashPlan session yet, for example after the first start.'}
             </p>
             <p>
@@ -148,7 +174,10 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
               Email or username
               <input
                 autoComplete="username"
+                autoCapitalize="none"
+                spellCheck={false}
                 value={info.username}
+                readOnly={!!knownAccount}
                 onChange={(e) => field('username', e.target.value)}
                 required
               />
@@ -211,7 +240,7 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
                 </label>
               </>
             )}
-            {loginType === 'local' && (
+            {loginType === 'local' && usePassword && (
               <label>
                 CrashPlan password
                 <input
@@ -247,6 +276,17 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
                 complete.
               </div>
             )}
+            {!sso && loginType === 'local' && (
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setUsePassword(!usePassword)}
+              >
+                {usePassword
+                  ? 'Sign in through the browser instead'
+                  : 'Sign in with a password here (accounts without verification code)'}
+              </button>
+            )}
             {!sso && (
               <button
                 disabled={
@@ -257,7 +297,7 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
               >
                 {!loginType
                   ? 'Continue'
-                  : loginType === 'local'
+                  : loginType === 'local' && usePassword
                     ? 'Sign in to CrashPlan'
                     : 'Continue in browser'}
                 <ArrowRight size={16} />
@@ -266,9 +306,10 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
             {sso && (
               <div className="sso">
                 <p>
-                  Open the sign-in page and sign in with your password and
-                  verification code. When it says you can close the window,
-                  return here and confirm the account. Keep this page open.
+                  Open the CrashPlan sign-in page and sign in with your
+                  password and verification code. When it says you can close
+                  the window, come back here: sign-in completes by itself.
+                  Keep this page open.
                 </p>
                 {sso.providers.map((p) => (
                   <a
@@ -282,7 +323,7 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
                     <ArrowRight size={16} />
                   </a>
                 ))}
-                {ssoState.data?.state === 'confirm' && (
+                {ssoState.data?.state === 'confirm' && ssoState.data.differs && (
                   <div className="notice">
                     <p>The sign-in provider returned <strong>{ssoState.data.username}</strong>.</p>
                     {ssoState.data.differs && <p>This differs from the username entered above.</p>}

@@ -12,7 +12,7 @@ export function WebLogin({
 }: {
   onSession: (session: Session) => void
 }) {
-  const [username, setUsername] = useState('admin')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const login = useMutation({
     mutationFn: () => api.signIn(username, password),
@@ -45,6 +45,8 @@ export function WebLogin({
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
             required
           />
         </label>
