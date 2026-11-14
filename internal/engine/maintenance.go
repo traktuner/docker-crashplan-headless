@@ -30,7 +30,17 @@ func (c *Client) CheckMaintenance(ctx context.Context, source, target string) er
 		return ErrRejected
 	}
 	body, _ := json.Marshal(map[string]string{"targetId": target})
-	raw, err := c.legacyRequest(ctx, "BackupStatsMessage", "PUT", "/v0/GetBackupStats", body, true, false)
+	raw, err := c.legacyRead(ctx, "BackupStatsMessage", "PUT", "/v0/GetBackupStats", body, func(decoded []byte) probeResult {
+		var named struct {
+			Stats *struct {
+				Target json.RawMessage `json:"targetId"`
+			} `json:"backupStats"`
+		}
+		if json.Unmarshal(decoded, &named) == nil && named.Stats != nil && decimal(named.Stats.Target) == target {
+			return probeInStep
+		}
+		return probeUnknown
+	})
 	raw, err = restoreResponse(raw, err, "BackupStatsMessage")
 	if err != nil {
 		return err

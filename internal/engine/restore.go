@@ -331,7 +331,11 @@ func (j RestoreJob) UserName() string    { return j.userName }
 func (j RestoreJob) UsesHelper() bool    { return j.kind == "CLIENT" && j.hasUser }
 func (c *Client) RestoreJobs(ctx context.Context) ([]RestoreJob, error) {
 	ctx = c.operationContext(ctx)
-	raw, err := c.legacyRequest(ctx, "RestoreJobsResponseMessage", "PUT", "/v0/RestoreJobsRequest", []byte(`{}`), true, false)
+	raw, err := c.legacyRead(ctx, "RestoreJobsResponseMessage", "PUT", "/v0/RestoreJobsRequest", []byte(`{}`), func([]byte) probeResult {
+		// ControlRestore answers with the same class; a list read must not
+		// clear an uncertainty that a restore control left behind.
+		return probeUnknown
+	})
 	raw, err = restoreResponse(raw, err, "RestoreJobsResponseMessage")
 	if err != nil {
 		return nil, err

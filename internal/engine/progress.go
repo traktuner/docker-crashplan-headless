@@ -167,6 +167,25 @@ func (c *Client) destinationProgress(ctx context.Context, target string) (Destin
 // marks the lane uncertain like any legacy request, but a later answer that
 // verifiably belongs to this request (matching target) clears it again, so a
 // closed page or one timeout does not disable the class until a restart.
+// legacyRead is the recoverable path for read-only legacy classes. check
+// receives the decoded answer and says whether it proves the lane in step.
+func (c *Client) legacyRead(ctx context.Context, class, method, path string, body []byte, check func([]byte) probeResult) ([]byte, error) {
+	return c.legacyProbe(ctx, class, method, path, body, func(raw []byte) probeResult {
+		decoded, err := restoreResponse(raw, nil, class)
+		if err != nil {
+			if errors.Is(err, ErrProtocol) {
+				return probeMismatch
+			}
+			// A rejection of the right class is an answer, but proves nothing.
+			return probeUnknown
+		}
+		return check(decoded)
+	})
+}
+
+// anyAnswer suits requests without parameters: every answer of the class fits.
+func anyAnswer([]byte) probeResult { return probeInStep }
+
 type probeResult int
 
 const (
@@ -198,6 +217,10 @@ func (c *Client) legacyProbe(ctx context.Context, class, method, path string, bo
 	if !c.currentGeneration(ctx) || ctx.Err() != nil {
 		return nil, ErrUnavailable
 	}
+	// Once sent, the answer is always read, even if the browser left: an
+	// abandoned answer is what makes a lane uncertain.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	defer cancel()
 	raw, err := c.request(ctx, method, path, body, true, false)
 	if err == nil && !c.currentGeneration(ctx) {
 		err = ErrUnavailable

@@ -126,7 +126,13 @@ func (c *Client) BrowseArchive(ctx context.Context, credentials RestoreCredentia
 	if credentials.generation != nil && ctx.Value(generationKey{}) != credentials.generation {
 		return ArchivePage{}, ErrUnavailable
 	}
-	raw, err := c.legacyRequest(ctx, "GetChildrenFileVersionsResultMessage", "POST", "/v0/GetChildrenFileVersions", q.body(credentials.key), true, false)
+	raw, err := c.legacyRead(ctx, "GetChildrenFileVersionsResultMessage", "POST", "/v0/GetChildrenFileVersions", q.body(credentials.key), func(decoded []byte) probeResult {
+		// The answer echoes its query; only this query's answer proves the lane.
+		if match, e := matchArchiveQuery(q, decoded); e == nil && match {
+			return probeInStep
+		}
+		return probeMismatch
+	})
 	raw, err = restoreResponse(raw, err, "GetChildrenFileVersionsResultMessage")
 	if err != nil {
 		return ArchivePage{}, err
@@ -188,7 +194,12 @@ func (c *Client) ArchiveVersions(ctx context.Context, in ArchiveQuery) ([]Archiv
 	if err != nil {
 		return nil, err
 	}
-	raw, err := c.legacyRequest(ctx, "GetAllVersionsResultMessage", "PUT", "/v0/GetAllVersions", q.body(""), true, false)
+	raw, err := c.legacyRead(ctx, "GetAllVersionsResultMessage", "PUT", "/v0/GetAllVersions", q.body(""), func(decoded []byte) probeResult {
+		if match, e := matchArchiveQuery(q, decoded); e == nil && match {
+			return probeInStep
+		}
+		return probeMismatch
+	})
 	raw, err = restoreResponse(raw, err, "GetAllVersionsResultMessage")
 	if err != nil {
 		return nil, err

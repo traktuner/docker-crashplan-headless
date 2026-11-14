@@ -32,7 +32,9 @@ The CLI uses the same typed operations through a separate Unix trust boundary.
 One native event socket serves status, SSO, restore helper requests and archive results.
 Archive requests retain their original query in the native request registry.
 Response processing verifies request, session, source, destination and plan identity.
-An unresolved dispatched response retains its uncertainty barrier.
+An unresolved dispatched action retains its uncertainty barrier until the engine restarts.
+Read-only requests always wait for their answer, even after the browser leaves.
+A read class that lost an answer recovers with the next answer that verifiably belongs to its request (echoed query, target or a parameterless request); a foreign answer is rejected, never shown.
 Submission records survive restart and prevent automatic duplicate scan, restore and local archive actions.
 
 ## Web modules
