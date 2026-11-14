@@ -15,6 +15,9 @@ type clientCaches struct {
 	targets    []Device
 	targetsAt  time.Time
 	targetsRev uint64
+	// targetsEpoch counts invalidations; a read that started before one
+	// must not store its older list.
+	targetsEpoch uint64
 
 	historyMu  sync.Mutex
 	history    []HistoryEntry
@@ -48,13 +51,24 @@ func (c *Client) InvalidateTargets() {
 	cache := c.caches()
 	cache.targetsMu.Lock()
 	cache.targets, cache.targetsAt = nil, time.Time{}
+	cache.targetsEpoch++
 	cache.targetsMu.Unlock()
 }
 
-func (c *Client) storeTargets(revision uint64, devices []Device) {
+// targetsEpochNow is read before a computer list request.
+func (c *Client) targetsEpochNow() uint64 {
 	cache := c.caches()
 	cache.targetsMu.Lock()
-	cache.targets, cache.targetsAt, cache.targetsRev = devices, time.Now(), revision
+	defer cache.targetsMu.Unlock()
+	return cache.targetsEpoch
+}
+
+func (c *Client) storeTargets(revision, epoch uint64, devices []Device) {
+	cache := c.caches()
+	cache.targetsMu.Lock()
+	if cache.targetsEpoch == epoch {
+		cache.targets, cache.targetsAt, cache.targetsRev = devices, time.Now(), revision
+	}
 	cache.targetsMu.Unlock()
 }
 

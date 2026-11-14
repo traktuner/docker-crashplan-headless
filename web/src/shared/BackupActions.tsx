@@ -24,11 +24,16 @@ export function BackupActions({
   actions,
   backupSetId,
   destinationId,
+  destinationName,
+  systemPaused,
   small,
 }: {
   actions: BackupStatus['actions']
   backupSetId?: string
   destinationId?: string
+  destinationName?: string
+  /** A system-wide pause is lifted only by a resume for everything. */
+  systemPaused?: boolean
   small?: boolean
 }) {
   const client = useQueryClient()
@@ -39,7 +44,10 @@ export function BackupActions({
     mutationFn: (action: 'run' | 'pause' | 'resume') =>
       action === 'run'
         ? api.runBackup(scope)
-        : api.backupControl(action, action === 'pause' ? { ...scope, durationMinutes: minutes } : scope),
+        : action === 'pause'
+          ? // CrashPlan pauses a whole destination, never one set at it.
+            api.backupControl('pause', { ...(destinationId ? { destinationId } : {}), durationMinutes: minutes })
+          : api.backupControl('resume', systemPaused ? {} : scope),
     onSettled: () => {
       void client.invalidateQueries({ queryKey: ['backup-progress'] })
       void client.invalidateQueries({ queryKey: ['backup-summary'] })
@@ -54,7 +62,7 @@ export function BackupActions({
   if (!actions.run && !actions.pause && !actions.resume) return null
   const size = small ? ' btn-sm' : ''
   const busy = control.isPending
-  const where = backupSetId ? 'this backup set' : 'all backups'
+  const where = destinationId ? 'backups to ' + (destinationName || 'this destination') : 'all backups'
   return (
     <div className="backup-actions">
       <div className="button-row">

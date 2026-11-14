@@ -171,7 +171,8 @@ func parseMount(raw []byte, path string) (mountRecord, error) {
 			continue
 		}
 		if found {
-			return mountRecord{}, ErrNotReady
+			// Something is mounted on top of the source: definite, stop now.
+			return mountRecord{}, IdentityChanged
 		}
 		found = true
 		selected = mountRecord{fields[0], fields[2], unescape(fields[3]), path, fields[separator+1]}

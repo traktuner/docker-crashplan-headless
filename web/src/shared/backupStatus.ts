@@ -451,6 +451,8 @@ export function backupStatus(input: {
       tone: 'idle',
       busy: true,
     }
+  // A destination without a reading must never let the rest read "complete".
+  const unknown = read.length > all.length
   const now = input.now ?? Date.now()
   const candidates = all.flatMap((d) => [
     ...destinationCandidates(d, now),
@@ -464,6 +466,15 @@ export function backupStatus(input: {
       title: 'No backup destination',
       detail: 'Add a destination to a backup set to start backing up.',
       tone: 'warn',
+    }
+  if (status.kind === 'complete' && unknown)
+    return {
+      ...base,
+      kind: 'checking',
+      title: 'Status partly unavailable',
+      detail: 'One destination did not report its status. It is asked again in a few seconds.',
+      tone: 'idle',
+      busy: true,
     }
   // The overall controls act on everything, not on one pair.
   const scoped = { ...status, backupSetId: undefined, targetId: undefined }

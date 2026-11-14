@@ -65,7 +65,14 @@ function PairDetails({ d, s }: { d: DestinationProgress; s: SetProgress }) {
       )}
       {(state.actions.run || state.actions.pause || state.actions.resume) && (
         <div className="row">
-          <BackupActions actions={state.actions} backupSetId={s.backupSetId} destinationId={d.targetId} small />
+          <BackupActions
+            actions={state.actions}
+            backupSetId={s.backupSetId}
+            destinationId={d.targetId}
+            destinationName={d.name}
+            systemPaused={state.kind === 'system-paused'}
+            small
+          />
         </div>
       )}
     </div>

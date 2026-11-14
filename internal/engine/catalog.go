@@ -74,7 +74,7 @@ type Device struct {
 
 func (c *Client) Devices(ctx context.Context) ([]Device, error) {
 	ctx = c.operationContext(ctx)
-	revision := c.SessionRevision()
+	revision, epoch := c.SessionRevision(), c.targetsEpochNow()
 	raw, err := c.legacyRead(ctx, "ComputersMessage", "GET", "/v0/GetComputers", nil, anyAnswer)
 	raw, err = restoreResponse(raw, err, "ComputersMessage")
 	if err != nil {
@@ -85,7 +85,7 @@ func (c *Client) Devices(ctx context.Context) ([]Device, error) {
 		return nil, err
 	}
 	// A fresh list also refreshes the targets progress polling reuses.
-	c.storeTargets(revision, devices)
+	c.storeTargets(revision, epoch, devices)
 	return devices, nil
 }
 

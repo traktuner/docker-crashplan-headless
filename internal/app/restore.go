@@ -78,8 +78,10 @@ func (s *Server) restoreRoutes(handle func(string, string, bool, handler)) {
 		if partial != nil {
 			// Some jobs were removed; the rest stay listed. Code only.
 			s.options.Logger.Warn("restore_clear_partial", "removed", removed, "outcome", errorCode(partial))
+			writeData(w, 200, map[string]any{"removed": removed, "incomplete": errorCode(partial)})
+			return nil
 		}
-		writeData(w, 200, map[string]int{"removed": removed})
+		writeData(w, 200, map[string]any{"removed": removed})
 		return nil
 	})
 	handle("POST /api/v1/restore/original", "restore.original", true, func(w http.ResponseWriter, r *http.Request, _ auth.Session) error {

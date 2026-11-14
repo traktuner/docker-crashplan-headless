@@ -989,7 +989,8 @@ export class API {
   restoreJobs(): Promise<RestoreJob[]> {
     return this.request('/api/v1/restore/jobs')
   }
-  clearCompletedRestores(): Promise<{ removed: number }> {
+  /** `incomplete` names the error when some completed restores stayed listed. */
+  clearCompletedRestores(): Promise<{ removed: number; incomplete?: string }> {
     return this.request('/api/v1/restore/jobs/clear-completed', 'POST', {})
   }
   restoreOperations(): Promise<RestoreOperation[]> {

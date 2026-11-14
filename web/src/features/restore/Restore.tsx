@@ -727,6 +727,14 @@ export function Restore() {
           </div>
         )}
         <ErrorNotice error={jobs.error ?? control.error ?? clearCompleted.error} />
+        {clearCompleted.data?.incomplete && (
+          <div className="row-block">
+            <Notice tone="warning">
+              Removed {clearCompleted.data.removed} completed {clearCompleted.data.removed === 1 ? 'restore' : 'restores'}. The others are
+              still listed because CrashPlan did not confirm their removal. Try again in a moment.
+            </Notice>
+          </div>
+        )}
         {jobs.isPending ? (
           <Loading />
         ) : openJobs.length + pastJobs.length === 0 ? (

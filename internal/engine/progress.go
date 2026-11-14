@@ -116,6 +116,7 @@ func (c *Client) progressTargets(native context.Context, revision uint64) ([]Dev
 		return devices, nil
 	}
 	var devices []Device
+	epoch := c.targetsEpochNow()
 	_, err := c.legacyProbe(native, "ComputersMessage", "GET", "/v0/GetComputers", nil, true, func(raw []byte) probeResult {
 		decoded, e := restoreResponse(raw, nil, "ComputersMessage")
 		if e != nil {
@@ -130,7 +131,7 @@ func (c *Client) progressTargets(native context.Context, revision uint64) ([]Dev
 	if err != nil {
 		return nil, err
 	}
-	c.storeTargets(revision, devices)
+	c.storeTargets(revision, epoch, devices)
 	return devices, nil
 }
 

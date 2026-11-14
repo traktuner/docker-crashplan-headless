@@ -53,7 +53,7 @@ type Supervisor struct {
 	state    State
 	restart  chan uint64
 	checkMu  sync.Mutex
-	inflight chan error
+	inflight *sourceCheck
 }
 
 // errSourceTimeout is an ambiguous failure: the check did not return in time.
@@ -91,23 +91,26 @@ func New(options Options) (*Supervisor, error) {
 func (s *Supervisor) Check() error {
 	s.checkMu.Lock()
 	if s.inflight == nil {
-		result := make(chan error, 1)
-		s.inflight = result
+		check := &sourceCheck{done: make(chan struct{})}
+		s.inflight = check
 		gate := s.options.Sources
-		go func() { result <- gate.Check() }()
+		go func() {
+			check.err = gate.Check()
+			s.checkMu.Lock()
+			if s.inflight == check {
+				s.inflight = nil
+			}
+			s.checkMu.Unlock()
+			close(check.done) // every waiter reads the same result
+		}()
 	}
-	result := s.inflight
+	check := s.inflight
 	s.checkMu.Unlock()
 	timer := time.NewTimer(s.options.SourceTimeout)
 	defer timer.Stop()
 	select {
-	case err := <-result:
-		s.checkMu.Lock()
-		if s.inflight == result {
-			s.inflight = nil
-		}
-		s.checkMu.Unlock()
-		return err
+	case <-check.done:
+		return check.err
 	case <-timer.C:
 		s.options.Logger.Warn("source_check_timeout", "timeout_s", int(s.options.SourceTimeout/time.Second))
 		return errSourceTimeout
@@ -312,4 +315,10 @@ func sourceReason(err error) string {
 		return string(reason)
 	}
 	return "SOURCE_NOT_READY"
+}
+
+// sourceCheck is one source check shared by every caller waiting for it.
+type sourceCheck struct {
+	done chan struct{}
+	err  error
 }
