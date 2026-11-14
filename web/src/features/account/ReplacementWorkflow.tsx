@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../shared/api'
 import {
+  TechnicalDetails,
   ErrorNotice,
   Field,
   Notice,
@@ -18,6 +19,11 @@ export function ReplacementWorkflow() {
   const state = useQuery({
     queryKey: ['replacement'],
     queryFn: () => api.replacementState(),
+  })
+  const devices = useQuery({
+    queryKey: ['devices'],
+    queryFn: () => api.devices(),
+    enabled: !!state.data?.deviceSelectedGuid,
   })
   const [action, setAction] = useState<'finish' | 'cancel'>('finish')
   const [confirmation, setConfirmation] = useState('')
@@ -66,8 +72,18 @@ export function ReplacementWorkflow() {
           {state.data?.deviceSelectedGuid && (
             <Row
               title="Selected device"
-              value={<code>{state.data.deviceSelectedGuid}</code>}
+              value={
+                devices.data?.find((d) => String(d.id) === state.data?.deviceSelectedGuid)?.name ||
+                'A device of your account'
+              }
             />
+          )}
+          {state.data?.deviceSelectedGuid && (
+            <div className="row-block">
+              <TechnicalDetails>
+                Device identifier <code>{state.data.deviceSelectedGuid}</code>
+              </TechnicalDetails>
+            </div>
           )}
           <div className="row-block">
             <Notice>

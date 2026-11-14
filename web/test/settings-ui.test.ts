@@ -94,7 +94,8 @@ test('settings page has tabs, no native session or tray, and no browser validati
   ])
   const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(Settings)))
   for (const tab of ['Backup', 'Network', 'Notifications', 'General', 'Proxy'])
-    assert.match(html, new RegExp(`<button[^>]*aria-pressed="[a-z]+"[^>]*>${tab}</button>`))
+    assert.match(html, new RegExp(`<button[^>]*role="tab"[^>]*aria-selected="[a-z]+"[^>]*>${tab}</button>`))
+  assert.match(html, /role="tablist"/)
   assert.ok(!html.includes('Native session'))
   assert.ok(!html.includes('tray'))
   assert.ok(!html.includes('(ms)'))
@@ -119,7 +120,9 @@ test('security forms use inline validation and destructive styling', async () =>
     for (const form of html.match(/<form[^>]*>/g) ?? []) assert.match(form, /novalidate=""/i)
     if (type === 'AccountPassword') {
       assert.match(html, /class="btn btn-destructive"[^>]*>Upgrade protection</)
-      assert.match(html, /<code>UPGRADE TO PrivatePassword<\/code>/)
+      // A readable phrase; the request still carries the exact service phrase.
+      assert.match(html, /<code>UPGRADE TO ARCHIVE PASSWORD<\/code>/)
+      assert.ok(!html.includes('PrivatePassword'))
     } else {
       assert.match(html, /class="btn btn-destructive"[^>]*>Replace custom key</)
       assert.match(html, /<code>REPLACE CUSTOM KEY<\/code>/)

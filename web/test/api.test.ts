@@ -336,3 +336,72 @@ test('every server error category keeps its own code and a specific message', as
     server.close()
   }
 })
+
+test('new endpoints follow the audit contract', async () => {
+  const seen: { method: string; url: string; body: string }[] = []
+  const server = createServer(async (request, response) => {
+    let body = ''
+    for await (const chunk of request) body += chunk
+    seen.push({ method: request.method!, url: request.url!, body })
+    response.setHeader('Content-Type', 'application/json')
+    if (request.url === '/api/v1/backup/progress')
+      response.end('{"data":[{"targetId":"8","name":"Cloud","backingUp":false,"validating":false,"outOfSpace":false,"completedRateBytesPerSecond":"0","connected":false,"sets":[{"backupSetId":"1","percent":92.53,"complete":false},{"backupSetId":"2"}]}]}')
+    else if (request.url === '/api/v1/alerts')
+      response.end('{"data":[{"id":"a","name":"X","flags":0,"expiration":"0","priority":3,"closable":false,"action":"retry"}]}')
+    else response.end('{"data":{"accepted":true,"removed":2}}')
+  }).listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  try {
+    const address = server.address()
+    assert(address && typeof address !== 'string')
+    const api = new API(`http://127.0.0.1:${address.port}`)
+    const progress = await api.backupProgress()
+    assert.equal(progress[0]!.connected, false)
+    assert.equal(progress[0]!.sets[0]!.percent, 92.53)
+    assert.equal(progress[0]!.sets[0]!.complete, false)
+    // Missing fields stay unknown: never complete by default.
+    assert.equal(progress[0]!.sets[1]!.percent, undefined)
+    assert.equal(progress[0]!.sets[1]!.complete, undefined)
+    const alerts = await api.alerts()
+    assert.equal(alerts[0]!.priority, 3)
+    assert.equal(alerts[0]!.closable, false)
+    await api.history(5)
+    await api.history()
+    await api.runBackup({ backupSetId: '1', destinationId: '8' })
+    await api.backupControl('pause', { backupSetId: '1', destinationId: '8', durationMinutes: '60' })
+    await api.reconnectDestination('8')
+    await api.clearCompletedRestores()
+    await api.account()
+    const calls = seen.map((c) => c.method + ' ' + c.url)
+    assert.deepEqual(calls.slice(2), [
+      'GET /api/v1/history?limit=5',
+      'GET /api/v1/history',
+      'POST /api/v1/backup/run',
+      'POST /api/v1/backup/pause',
+      'POST /api/v1/destinations/8/reconnect',
+      'POST /api/v1/restore/jobs/clear-completed',
+      'GET /api/v1/account',
+    ])
+    assert.deepEqual(JSON.parse(seen[4]!.body), { backupSetId: '1', destinationId: '8' })
+    assert.deepEqual(JSON.parse(seen[5]!.body), { backupSetId: '1', destinationId: '8', durationMinutes: '60' })
+  } finally {
+    server.close()
+  }
+})
+
+test('a pending native response asks to try again, not to restart the engine', async () => {
+  const server = createServer((request, response) => {
+    response.writeHead(409, { 'Content-Type': 'application/json' })
+    response.end('{"error":{"code":"NATIVE_RESPONSE_PENDING"}}')
+  }).listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  try {
+    const address = server.address()
+    assert(address && typeof address !== 'string')
+    const error = await new API(`http://127.0.0.1:${address.port}`).history().catch((e: unknown) => e)
+    assert(error instanceof APIError)
+    assert.equal(error.message, 'CrashPlan did not answer an earlier request. Try again in a moment.')
+  } finally {
+    server.close()
+  }
+})

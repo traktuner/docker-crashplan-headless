@@ -41,68 +41,6 @@
   font-size: 13px;
   color: var(--label-2);
 }
-.setting-window {
-  display: grid;
-  gap: 10px;
-}
-.setting-window .setting-inline {
-  justify-content: flex-start;
-}
-.setting-window .input[type='time'] {
-  width: 120px;
-}
-.setting-days {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.setting-day {
-  min-width: 46px;
-  min-height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--separator-strong);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--label);
-  font: inherit;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-.setting-day[aria-pressed='true'] {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
-}
-.setting-day:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-.setting-day:focus-visible {
-  outline: 3px solid var(--focus);
-  outline-offset: 1px;
-}
-.setting-patterns {
-  display: grid;
-  gap: 8px;
-}
-.setting-pattern {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.setting-pattern .input {
-  flex: 1 1 200px;
-  width: auto;
-}
-.setting-pattern .check {
-  font-size: 13px;
-  color: var(--label-2);
-}
-.setting-patterns-empty {
-  font-size: 13px;
-  color: var(--label-2);
-}
 .settings-title {
   display: flex;
   align-items: center;
@@ -115,21 +53,6 @@
 .settings-pane {
   display: grid;
   gap: 24px;
-}
-.settings-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.settings-saved {
-  font-size: 13px;
-  color: var(--green);
-}
-.settings-pending {
-  font-size: 13px;
-  color: var(--label-2);
 }
 
 @media (max-width: 720px) {

@@ -38,7 +38,7 @@ export function FormField({
       <span className="field-label">{label}</span>
       {children}
       {error ? (
-        <span className="security-error">{error}</span>
+        <span className="security-error" role="alert">{error}</span>
       ) : (
         hint && <span className="field-hint">{hint}</span>
       )}
@@ -253,6 +253,8 @@ export function ReplaceCustomKey() {
             <input
               className="input"
               autoComplete="off"
+              autoCapitalize="characters"
+              autoCorrect="off"
               spellCheck={false}
               value={input.confirm}
               disabled={replace.isPending}

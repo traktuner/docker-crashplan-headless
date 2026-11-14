@@ -5,6 +5,7 @@ import {
   restoreDestinations,
   restoreSets,
   toggleSelection,
+  restoreJobView,
 } from '../src/features/restore/model.ts'
 
 const device = (over: Record<string, unknown>) => ({
@@ -38,4 +39,26 @@ test('unselecting a folder drops exclusions inside it', () => {
   const after = toggleSelection(state.selection, state.excluded, 'a', folder)
   assert.deepEqual(after.selection, {})
   assert.deepEqual(after.excluded, {})
+})
+
+test('restore jobs offer only the control that applies', () => {
+  const job = (over: Record<string, unknown>) => ({
+    id: '1', sourceId: '1', targetId: '2', completed: false, canceled: false, numFiles: '1', filesRestored: '0',
+    numBytes: '1', bytesRestored: '0', restorePath: '/restore', imported: false, admissible: true, ...over,
+  }) as never
+  const running = restoreJobView(job({ state: 'running' }))
+  assert.equal(running.label, 'Running')
+  assert.ok(running.canStop && !running.canResume)
+  const stopped = restoreJobView(job({ state: 'stopped' }))
+  assert.ok(!stopped.canStop && stopped.canResume)
+  assert.equal(restoreJobView(job({ state: 'stopped', admissible: false })).canResume, false)
+  const waiting = restoreJobView(job({ state: 'waiting', blockedReason: 'SOMETHING_ELSE' }))
+  assert.equal(waiting.label, 'Waiting')
+  assert.equal(waiting.blocked, 'Something else.')
+  assert.ok(restoreJobView(job({ state: 'completed' })).finished)
+  assert.equal(restoreJobView(job({ state: 'canceled' })).label, 'Canceled')
+  // Older backends: derived from the flags; both controls when unknown.
+  assert.equal(restoreJobView(job({ completed: true })).state, 'completed')
+  const unknown = restoreJobView(job({}))
+  assert.ok(unknown.canStop && unknown.canResume)
 })

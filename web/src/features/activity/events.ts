@@ -17,6 +17,26 @@ export function isBackupEvent(message: string) {
     !/^CrashPlan (started|stopped)/i.test(message)
 }
 
+/**
+ * Keys that stay with their entries when newer ones arrive or older ones drop
+ * out of a limited window: time, message length and the position among
+ * otherwise identical entries.
+ */
+export function eventKeys(entries: readonly { timestamp: string; message: string }[]): string[] {
+  const seen = new Map<string, number>()
+  return entries.map((e) => {
+    const base = e.timestamp + ':' + e.message.length
+    const n = seen.get(base) ?? 0
+    seen.set(base, n + 1)
+    return base + ':' + n
+  })
+}
+
+/** Most important first (lower priority number), as CrashPlan orders them. */
+export function sortAlerts<T extends { priority?: number }>(alerts: T[]): T[] {
+  return alerts.toSorted((a, b) => (a.priority ?? 1e9) - (b.priority ?? 1e9))
+}
+
 // Alerts the desktop app shows only as onboarding hints; meaningless here.
 const hiddenAlerts = new Set(['HelpIntroAlert'])
 export function visibleAlert(name: string) {

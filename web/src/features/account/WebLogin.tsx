@@ -14,8 +14,10 @@ export function WebLogin({
 }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  // Checked on submit: password managers fill fields without input events.
+  const [problem, setProblem] = useState('')
   const login = useMutation({
-    mutationFn: () => api.signIn(username, password),
+    mutationFn: ({ user, pass }: { user: string; pass: string }) => api.signIn(user, pass),
     onSuccess: onSession,
     onSettled: () => setPassword(''),
   })
@@ -39,12 +41,23 @@ export function WebLogin({
           noValidate
           onSubmit={(e) => {
             e.preventDefault()
-            login.mutate()
+            const form = new FormData(e.currentTarget)
+            const user = String(form.get('username') ?? username)
+            const pass = String(form.get('password') ?? password)
+            if (!user.trim() || !pass) {
+              setProblem(!user.trim() ? 'Enter the user name.' : 'Enter the password.')
+              return
+            }
+            setProblem('')
+            setUsername(user)
+            setPassword(pass)
+            login.mutate({ user, pass })
           }}
         >
           <Field label="User name">
             <input
               className="input"
+              name="username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               autoComplete="username"
@@ -56,16 +69,19 @@ export function WebLogin({
             <input
               className="input"
               type="password"
+              name="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
             />
           </Field>
+          {problem && (
+            <span className="inline-error" role="alert">
+              {problem}
+            </span>
+          )}
           <ErrorNotice error={login.error} />
-          <button
-            className="btn btn-primary btn-lg btn-block"
-            disabled={login.isPending || !username || !password}
-          >
+          <button className="btn btn-primary btn-lg btn-block" disabled={login.isPending}>
             {login.isPending ? 'Signing in…' : 'Sign in'}
           </button>
         </form>

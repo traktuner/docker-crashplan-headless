@@ -47,12 +47,12 @@ export function count(value: unknown): string {
   return BigInt(d).toLocaleString('en-US')
 }
 
-/** 60800000 → "60.8 million". */
+/** 18342 → "18,342"; 60800000 → "60.8 million". Exact below one million. */
 export function compactCount(value: unknown): string {
   const d = digits(value)
   if (d === undefined) return '—'
   const n = Number(d)
-  if (n < 10_000) return n.toLocaleString('en-US')
+  if (Math.abs(n) < 1_000_000) return BigInt(d).toLocaleString('en-US')
   return new Intl.NumberFormat('en-US', {
     notation: 'compact',
     maximumFractionDigits: 1,
@@ -61,6 +61,7 @@ export function compactCount(value: unknown): string {
     .replace('K', ' thousand')
     .replace('M', ' million')
     .replace('B', ' billion')
+    .replace('T', ' trillion')
 }
 
 export function plural(n: number, one: string, many = one + 's') {
@@ -97,17 +98,39 @@ function toDate(value: unknown): Date | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date
 }
 
-/** "14 Nov 2026, 09:48" in the viewer's locale and time zone. */
+// English month names everywhere (the page is English), but the viewer's own
+// 12/24-hour preference and time zone.
+let hour12: boolean | undefined
+function viewerHour12(): boolean {
+  if (hour12 === undefined) {
+    try {
+      hour12 = new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions().hour12 === true
+    } catch {
+      hour12 = false
+    }
+  }
+  return hour12
+}
+
+/** "14 Nov 2026, 09:48" in English, in the viewer's time zone and clock. */
 export function dateTime(value: unknown, fallback = '—'): string {
   const date = toDate(value)
   if (!date) return fallback
-  return date.toLocaleString(undefined, {
+  return date.toLocaleString('en-GB', {
     day: 'numeric',
     month: 'short',
     year: date.getFullYear() === new Date().getFullYear() ? undefined : 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    hour12: viewerHour12(),
   })
+}
+
+/** "09:48" or "9:48 am", following the viewer's clock preference. */
+export function clockTime(value: unknown, fallback = '—'): string {
+  const date = toDate(value)
+  if (!date) return fallback
+  return date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: viewerHour12() })
 }
 
 /** "3 minutes ago", "yesterday", "in 2 hours". */
