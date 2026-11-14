@@ -291,6 +291,10 @@ export interface Device {
   self: boolean
   blocked: boolean
   deleted: boolean
+  /** Another computer of the signed-in account. */
+  owned?: boolean
+  /** A CrashPlan cloud server. */
+  cloud?: boolean
 }
 export interface MigrationDevice {
   computerGuid: string

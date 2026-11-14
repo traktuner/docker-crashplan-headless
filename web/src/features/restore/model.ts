@@ -1,11 +1,12 @@
 // Restore choices without React, so they can be tested directly.
 import type { Device, RestoreSelection } from '../../shared/api'
 
-/** Computers whose archives can be restored: this device and every other
- * device of the account, as in the desktop app. Backup destinations are not. */
+/** Computers whose archives can be restored: this device and the other
+ * computers of the account (property OWN), as in the desktop app. Cloud
+ * servers, destinations and friends' computers are not. */
 export function restoreSources(devices: Device[] | undefined) {
   return (devices ?? [])
-    .filter((d) => d.self || d.source || (!d.target && !d.availableTarget))
+    .filter((d) => d.self || d.source || (d.owned && !d.cloud && !d.target && !d.availableTarget))
     .toSorted((a, b) => Number(b.self) - Number(a.self) || a.name.localeCompare(b.name))
 }
 

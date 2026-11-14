@@ -15,8 +15,10 @@ const device = (over: Record<string, unknown>) => ({
 test('every computer of the account is a restore source, destinations are not', () => {
   const devices = [
     device({ id: '7', name: 'server', self: true }),
-    device({ id: '9', name: 'laptop' }),
-    device({ id: '8', name: 'Cloud', target: true }),
+    device({ id: '9', name: 'laptop', owned: true }),
+    device({ id: '8', name: 'Cloud', target: true, availableTarget: true, cloud: true }),
+    device({ id: '6', name: 'Old cloud entry', cloud: true }),
+    device({ id: '4200', name: 'Friend' }),
   ]
   assert.deepEqual(restoreSources(devices).map((d: { id: string }) => d.id), ['7', '9'])
   assert.deepEqual(restoreDestinations(devices).map((d: { id: string }) => d.id), ['8'])
