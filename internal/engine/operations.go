@@ -52,7 +52,17 @@ func (c *Client) Call(ctx context.Context, name string, in OperationRequest) (js
 	var raw []byte
 	var err error
 	if op.responseClass != "" {
-		raw, err = c.legacyRequest(ctx, op.responseClass, op.method, path, body, op.auth, false)
+		// Status reads stay usable after a lost answer. An answer that echoes
+		// the requested backup set proves the lane in step.
+		raw, err = c.legacyReadAuth(ctx, op.responseClass, op.method, path, body, op.auth, func(decoded []byte) probeResult {
+			var asked, echo struct {
+				ID json.Number `json:"backupSetId"`
+			}
+			if json.Unmarshal(body, &asked) == nil && asked.ID != "" && json.Unmarshal(decoded, &echo) == nil && echo.ID == asked.ID {
+				return probeInStep
+			}
+			return probeUnknown
+		})
 	} else {
 		raw, err = c.request(ctx, op.method, path, body, op.auth, false)
 	}

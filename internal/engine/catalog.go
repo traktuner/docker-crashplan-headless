@@ -59,7 +59,7 @@ type Device struct {
 
 func (c *Client) Devices(ctx context.Context) ([]Device, error) {
 	ctx = c.operationContext(ctx)
-	raw, err := c.legacyRequest(ctx, "ComputersMessage", "GET", "/v0/GetComputers", nil, true, false)
+	raw, err := c.legacyRead(ctx, "ComputersMessage", "GET", "/v0/GetComputers", nil, anyAnswer)
 	raw, err = restoreResponse(raw, err, "ComputersMessage")
 	if err != nil {
 		return nil, err

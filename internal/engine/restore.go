@@ -41,7 +41,7 @@ func (c *Client) RestoreContext(ctx context.Context, source string) (RestoreCred
 	if !validID(source) {
 		return RestoreCredentials{}, ErrInvalidRequest
 	}
-	raw, err := c.legacyRequest(ctx, "StatusResponseMessage", "POST", "/v0/StatusQuery", statusQuery(c.home()), true, false)
+	raw, err := c.legacyRead(ctx, "StatusResponseMessage", "POST", "/v0/StatusQuery", statusQuery(c.home()), anyAnswer)
 	raw, err = restoreResponse(raw, err, "StatusResponseMessage")
 	if err != nil {
 		return RestoreCredentials{}, err
@@ -57,7 +57,17 @@ func (c *Client) RestoreContext(ctx context.Context, source string) (RestoreCred
 	body, _ := json.Marshal(struct {
 		Sources []string `json:"sourceGuids"`
 	}{[]string{source}})
-	raw, err = c.legacyRequest(ctx, "RestorePrivateKeyResponse", "POST", "/v0/RestorePrivateKeyRequest", body, true, false)
+	raw, err = c.legacyRead(ctx, "RestorePrivateKeyResponse", "POST", "/v0/RestorePrivateKeyRequest", body, func(decoded []byte) probeResult {
+		var echo struct {
+			Items []struct {
+				Source json.Number `json:"sourceGuid"`
+			} `json:"securityKeyInfoList"`
+		}
+		if json.Unmarshal(decoded, &echo) == nil && len(echo.Items) == 1 && echo.Items[0].Source.String() == source {
+			return probeInStep
+		}
+		return probeMismatch
+	})
 	raw, err = restoreResponse(raw, err, "RestorePrivateKeyResponse")
 	if err != nil {
 		return RestoreCredentials{}, err
@@ -331,7 +341,11 @@ func (j RestoreJob) UserName() string    { return j.userName }
 func (j RestoreJob) UsesHelper() bool    { return j.kind == "CLIENT" && j.hasUser }
 func (c *Client) RestoreJobs(ctx context.Context) ([]RestoreJob, error) {
 	ctx = c.operationContext(ctx)
-	raw, err := c.legacyRequest(ctx, "RestoreJobsResponseMessage", "PUT", "/v0/RestoreJobsRequest", []byte(`{}`), true, false)
+	raw, err := c.legacyRead(ctx, "RestoreJobsResponseMessage", "PUT", "/v0/RestoreJobsRequest", []byte(`{}`), func([]byte) probeResult {
+		// ControlRestore answers with the same class; a list read must not
+		// clear an uncertainty that a restore control left behind.
+		return probeUnknown
+	})
 	raw, err = restoreResponse(raw, err, "RestoreJobsResponseMessage")
 	if err != nil {
 		return nil, err

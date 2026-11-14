@@ -43,6 +43,7 @@ jobs:
         run: |
           docker build \
             --build-arg SOURCE_REVISION=${{ github.sha }} \
+            --build-arg SOURCE_VERSION=${{ steps.v.outputs.release }} \
             --build-arg CRASHPLAN_VERSION=${{ steps.v.outputs.version }} \
             --build-arg CRASHPLAN_BUILD=${{ steps.v.outputs.build }} \
             --build-arg CRASHPLAN_SHA256=${{ steps.v.outputs.sha256 }} \

@@ -7,6 +7,7 @@ ARG CRASHPLAN_VERSION=
 ARG CRASHPLAN_BUILD=
 ARG CRASHPLAN_SHA256=
 ARG SOURCE_REVISION=main
+ARG SOURCE_VERSION=dev
 # Compile for the vendor's Java 25 runtime with --release 25.
 # Image tests verify the builder's launcher with the bundled vendor runtime.
 ARG TEMURIN_IMAGE=docker.io/library/eclipse-temurin:26-jdk-noble@sha256:9c0e8eddecccc0d5679b317b0c90fa7103ad25cae33df1c00280675eb681c7f8
@@ -81,7 +82,8 @@ RUN set -eux; \
 # Build the original product SPA. Node is absent from the runtime.
 FROM ${NODE_IMAGE} AS web
 ARG SOURCE_REVISION
-ENV VITE_SOURCE_REVISION=${SOURCE_REVISION}
+ARG SOURCE_VERSION
+ENV VITE_SOURCE_REVISION=${SOURCE_REVISION} VITE_SOURCE_VERSION=${SOURCE_VERSION}
 WORKDIR /work/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund

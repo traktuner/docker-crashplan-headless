@@ -78,7 +78,7 @@ type Alert struct {
 
 func (c *Client) Alerts(ctx context.Context) ([]Alert, error) {
 	ctx = c.operationContext(ctx)
-	raw, err := c.legacyRequest(ctx, "AlertListMessage", "GET", "/v0/AlertRequest", nil, true, false)
+	raw, err := c.legacyRead(ctx, "AlertListMessage", "GET", "/v0/AlertRequest", nil, anyAnswer)
 	raw, err = restoreResponse(raw, err, "AlertListMessage")
 	if err != nil {
 		return nil, err
@@ -158,7 +158,7 @@ type HistoryEntry struct {
 
 func (c *Client) History(ctx context.Context) ([]HistoryEntry, error) {
 	ctx = c.operationContext(ctx)
-	raw, err := c.legacyRequest(ctx, "GetHistoryLogResponseMessage", "PUT", "/v0/GetHistoryLog", []byte(`{}`), true, false)
+	raw, err := c.legacyRead(ctx, "GetHistoryLogResponseMessage", "PUT", "/v0/GetHistoryLog", []byte(`{}`), anyAnswer)
 	raw, err = restoreResponse(raw, err, "GetHistoryLogResponseMessage")
 	if err != nil {
 		return nil, err
@@ -201,7 +201,7 @@ type BackupSummary struct {
 
 func (c *Client) BackupSummary(ctx context.Context) (BackupSummary, error) {
 	ctx = c.operationContext(ctx)
-	raw, err := c.legacyRequest(ctx, "BackupStatsSummaryMessage", "GET", "/v0/GetBackupStatsSummary", nil, true, false)
+	raw, err := c.legacyRead(ctx, "BackupStatsSummaryMessage", "GET", "/v0/GetBackupStatsSummary", nil, anyAnswer)
 	raw, err = restoreResponse(raw, err, "BackupStatsSummaryMessage")
 	if err != nil {
 		return BackupSummary{}, err

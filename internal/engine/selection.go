@@ -66,6 +66,8 @@ func (c *Client) BrowseSource(ctx context.Context, id string, q SourceQuery) (So
 		body["parentPath"] = map[string]string{"path": q.Parent}
 	}
 	encoded, _ := json.Marshal(body)
+	// No answer field proves which set, rules or page it belongs to, so this
+	// class keeps the strict barrier: a lost answer fails closed.
 	raw, err = c.legacyRequest(ctx, class, "POST", path, encoded, true, false)
 	raw, err = restoreResponse(raw, err, class)
 	if err != nil {
