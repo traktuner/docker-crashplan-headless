@@ -39,6 +39,7 @@ func (*nativeStatusError) Error() string { return "NATIVE_HTTP_STATUS" }
 // Client owns a native HTTP session. It is independent of the web login session.
 // Native tokens stay inside this process and are cleared after a native 401.
 type Client struct {
+	userHome        string // engine user's home; empty means /root
 	base            string
 	http            *http.Client
 	mu              sync.RWMutex
@@ -354,4 +355,14 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte, 
 		return raw, errors.Join(ErrUnavailable, &nativeStatusError{status: response.StatusCode})
 	}
 	return raw, nil
+}
+
+// SetUserHome tells native status queries the engine user's home directory.
+func (c *Client) SetUserHome(home string) { c.userHome = home }
+
+func (c *Client) home() string {
+	if c.userHome == "" {
+		return "/root"
+	}
+	return c.userHome
 }

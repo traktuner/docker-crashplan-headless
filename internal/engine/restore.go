@@ -41,7 +41,7 @@ func (c *Client) RestoreContext(ctx context.Context, source string) (RestoreCred
 	if !validID(source) {
 		return RestoreCredentials{}, ErrInvalidRequest
 	}
-	raw, err := c.legacyRequest(ctx, "StatusResponseMessage", "POST", "/v0/StatusQuery", []byte(`{"appCode":"CPH","authToken":"","userHome":"/root","desktopFolder":"/root"}`), true, false)
+	raw, err := c.legacyRequest(ctx, "StatusResponseMessage", "POST", "/v0/StatusQuery", statusQuery(c.home()), true, false)
 	raw, err = restoreResponse(raw, err, "StatusResponseMessage")
 	if err != nil {
 		return RestoreCredentials{}, err
@@ -465,4 +465,9 @@ func (c *Client) legacyRequest(ctx context.Context, class, method, path string, 
 		c.mu.Unlock()
 	}
 	return raw, err
+}
+
+func statusQuery(home string) []byte {
+	body, _ := json.Marshal(map[string]string{"appCode": "CPH", "authToken": "", "userHome": home, "desktopFolder": home})
+	return body
 }

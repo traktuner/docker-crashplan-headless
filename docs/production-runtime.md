@@ -5,36 +5,44 @@ No host service or sidecar is required. Real account, restore and deployment acc
 
 ## Persistent storage
 
-Mount the complete configuration at `/config` on ZFS, ext4, XFS or Btrfs.
+Mount the complete configuration at `/config` as a persistent volume.
+A local filesystem (ZFS, ext4, XFS, Btrfs) is recommended for the native databases; other filesystems work and are reported in the log.
 The image preserves existing identity, settings, cache and metadata. A version change does not clear the cache.
 An empty configuration receives the bundled defaults.
 Keep the same source paths inside the container when replacing an existing image.
 Run only one engine against a configuration volume.
 
-The daemon runs as UID 0 and replaces only files that it owns.
-In an existing configuration, `machine-id`, `cp_version` and `conf/my.service.xml` must be regular files owned by UID 0 with one hard link.
-The same applies to `conf/jvm_args` when `CRASHPLAN_SRV_MAX_MEM` is set.
-The `var` directory must be owned by UID 0 and must not be writable by group or others; the restore helper uses private pipes there.
-An image that ran its engine under another user ID can leave these items with that owner.
-Initialization then stops with `CONFIG_INITIALIZATION_FAILED` or `RESTORE_HELPER_UNAVAILABLE`; the refused item remains unchanged.
-Earlier initialization steps may already have created directories or updated other configuration files.
-The preceding `configuration_item_refused` or `restore_helper_directory_refused` log entry names the reason, for example `foreign_owner`.
-Correct the ownership while every engine is stopped, then start again.
+## Users and file ownership
+
+By default the engine runs as root, so it can read every mounted file.
+Set `USER_ID` and `GROUP_ID` (optionally `SUP_GROUP_IDS` and `UMASK`) to run it as another user.
+The container then gives `/config` to that user and drops root rights before anything else starts.
+A container started directly as a non-root user (`--user`, Compose `user:`) keeps that user; `/config` must be writable by it.
+
+Files in `/config` that belong to another user are taken over at every start when the container starts as root.
+Volumes mounted below `/config` are left alone, and nothing changes while another engine holds the volume.
+This makes a configuration from another image usable, for example one that ran as UID 1000.
+Entries that cannot be changed, for example on a share that maps root to another user, are reported as `configuration_ownership_incomplete`.
+Group and other write access is removed from `/config/var`, where the restore helper keeps private pipes.
+Only a symlink or a directory in place of `machine-id`, `cp_version`, `conf/jvm_args` or `conf/my.service.xml` stops the start;
+the log entry `configuration_item_refused` names the item.
 
 Before replacement, stop the existing engine and take a consistent configuration backup.
 Preserve its source mappings and saved heap limit.
 An ordinary replacement keeps the device identity; inheritance is for deliberately replacing a device.
 Native sign-in can still be required when saved automatic login is ineligible.
 
-Mount each source separately and declare its container path in `CPH_SOURCE_ROOTS`.
+Mount your data at `/storage`, or several folders below it.
+Without `CPH_SOURCE_ROOTS`, every mount at or below `/storage` is a source; the log entry `sources_detected` lists them.
 The examples mount sources read-only.
-A source that is a subdirectory of a filesystem requires the configured marker file.
-Create that marker inside each source before startup.
-The daemon checks mounts and identities before starting the engine or a manual scan.
-It does not create host directories or mount network shares.
+The daemon checks every source before starting the engine or a manual scan: it must be mounted, a subfolder bind must not be empty
+(or must contain the marker file named by `CPH_SOURCE_SENTINEL`), and it must come from the same filesystem and path as at its first start.
+If a check fails, the engine waits and the log entry `source_not_ready` names the reason.
+See [Sources](environment.md#sources) for what these checks cannot detect; use a marker file for network shares.
+The daemon does not create host directories or mount network shares.
 
-`CPH_SOURCE_POLICY=local` accepts ZFS, ext4, XFS and Btrfs.
-`mounted` also permits existing NFS, NFS4 and SMB mounts; configuration still requires local storage.
+`CPH_SOURCE_POLICY=any` (default) accepts every real filesystem, including NFS, SMB and FUSE filesystems such as mergerfs.
+`mounted` limits sources to local filesystems, NFS and SMB; `local` to ZFS, ext4, XFS and Btrfs.
 Declare dedicated writable destinations in `CPH_RESTORE_ROOTS` for restores and local archives.
 Original-location restore requires a writable declared root containing each destination.
 
@@ -42,8 +50,7 @@ Original-location restore requires a writable declared root containing each dest
 
 1. Create the configuration, source and restore directories.
 2. Set `CPH_CONFIG_PATH`, `CPH_DATA_PATH`, `CPH_RESTORE_PATH` and `CPH_MEMORY_LIMIT`.
-3. Create `.cph-source-ready` in each source, or choose a different marker name.
-4. Run `docker compose -f docker-compose.example.yml up -d`.
+3. Run `docker compose -f docker-compose.example.yml up -d`.
 
 The base example starts headless.
 Add `-f docker-compose.web.example.yml` for the web interface.
@@ -52,7 +59,7 @@ Set `CPH_WEB_PASSWORD_PATH` to a private file containing at least 12 password ch
 The web overlay binds to loopback by default.
 Change `CPH_BIND_ADDRESS` for direct network access.
 
-For multiple sources, add one bind per source and include every container path in the JSON array.
+For multiple sources, add one bind per source below `/storage`; they are detected automatically.
 For multiple restore roots, add writable mounts and list their paths in `CPH_RESTORE_ROOTS`.
 See [all environment options](environment.md) for formats, defaults and advanced settings.
 
@@ -62,7 +69,7 @@ Use Apps > Install via YAML with [the Custom App template](../deploy/truenas/cus
 Replace the example pool paths, browser address, memory limit and password-file path.
 Use existing local datasets for configuration, sources and restores.
 The template needs no privileged mode, Docker socket, host PID namespace or external watcher.
-The process runs as container UID 0 to read selected files and preserve restore permissions.
+The engine runs as root by default to read selected files and preserve restore permissions; set `USER_ID`/`GROUP_ID` for another user.
 This template is a Custom App, rather than a catalog listing.
 Native installation, upgrade and lifecycle acceptance remain open until exercised on TrueNAS.
 
@@ -74,7 +81,8 @@ Host filesystem caches also consume memory outside the JVM.
 The Compose example requires an explicit limit instead of assuming a dataset size.
 `CRASHPLAN_SRV_MAX_MEM` overrides the saved heap.
 Leave it empty to preserve the existing value.
-For a new configuration, the bundled heap setting applies; the launcher fallback is 1024 MiB.
+For a new configuration, the launcher uses 1024 MiB.
+An unusable value is reported and ignored; the start never fails because of the heap setting.
 
 The default image disables inotify registration and watches.
 Normal scans discover changed files.

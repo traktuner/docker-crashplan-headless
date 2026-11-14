@@ -4,7 +4,7 @@
 #   CPH_DATA_PATH=/srv/data
 #   CPH_RESTORE_PATH=/srv/restores
 #   CPH_MEMORY_LIMIT=8g   # Must exceed the saved Java heap plus native headroom.
-# Create these directories and .cph-source-ready inside each source first.
+# Create these directories first. Every mount below /storage is backed up.
 # New installation: optionally set CPH_HEAP=4G. Existing config: leave it empty.
 #
 # Headless: docker compose -f docker-compose.example.yml up -d
@@ -17,9 +17,9 @@ services:
     read_only: true
     environment:
       CPH_MODE: ${CPH_MODE:-headless}
-      CPH_SOURCE_ROOTS: '${CPH_SOURCE_ROOTS:-["/storage/data"]}'
-      CPH_SOURCE_POLICY: ${CPH_SOURCE_POLICY:-local}
-      CPH_SOURCE_SENTINEL: ${CPH_SOURCE_SENTINEL:-.cph-source-ready}
+      # Optional: run the engine as another user (default root).
+      # USER_ID: "1000"
+      # GROUP_ID: "1000"
       CPH_RESTORE_ROOTS: '${CPH_RESTORE_ROOTS:-["/restore"]}'
       TZ: ${TZ:-UTC}
       LANG: C.UTF-8
@@ -61,15 +61,13 @@ services:
         target: /restore
         bind:
           create_host_path: false
-      # Multiple sources: add one bind per source, then update CPH_SOURCE_ROOTS.
+      # Multiple sources: add one bind per source below /storage.
       # - type: bind
       #   source: /srv/photos
       #   target: /storage/photos
       #   read_only: true
       #   bind:
       #     create_host_path: false
-      # With photos above, use ["/storage/data","/storage/photos"].
-      # Create .cph-source-ready in both host directories.
       #
       # No restore writes: remove the /restore bind and set CPH_RESTORE_ROOTS=[].
       # Original-location restore: deliberately make its source writable and

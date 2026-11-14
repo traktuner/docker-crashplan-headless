@@ -1,6 +1,5 @@
 # Native TrueNAS Custom App candidate, installed through Apps > Install via YAML.
 # Replace paths, origin and memory limits before installation.
-# Create .cph-source-ready inside the source dataset.
 # For an existing config, remove CRASHPLAN_SRV_MAX_MEM to preserve its heap.
 # Set mem_limit above that saved heap, with additional native headroom.
 # This file has no external host service, NFS, Docker socket or host PID binding.
@@ -11,8 +10,6 @@ services:
     read_only: true
     environment:
       CPH_MODE: web
-      CPH_SOURCE_ROOTS: '["/storage/data"]'
-      CPH_SOURCE_SENTINEL: .cph-source-ready
       CPH_RESTORE_ROOTS: '["/restore"]'
       CPH_PUBLIC_ORIGINS: '["http://192.0.2.10:31080"]'
       CPH_WEB_USERNAME: admin

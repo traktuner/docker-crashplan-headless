@@ -7,7 +7,7 @@ import (
 
 // NativeEnvironment passes only the documented JVM/launcher inputs. Product
 // web credentials and unrelated host credentials never enter the child.
-func NativeEnvironment(input []string, restoreRoots ...string) []string {
+func NativeEnvironment(input []string, userName, home string, restoreRoots ...string) []string {
 	allowed := map[string]bool{
 		"LANG": true, "LC_ALL": true, "TZ": true, "SSL_CERT_FILE": true, "SSL_CERT_DIR": true,
 		"CRASHPLAN_SRV_MAX_MEM": true, "CPH_PATCHES": true, "CPH_GC": true,
@@ -16,7 +16,7 @@ func NativeEnvironment(input []string, restoreRoots ...string) []string {
 		"CPH_USER_INSTALL": true, "CPH_DIAG_DIR": true, "CPH_DIAGNOSTICS": true,
 		"CPH_JFR": true, "CPH_HEAPDUMP_ON_OOM": true, "CPH_EXTRA_JAVA_OPTS": true, "CPH_RUN_DIR": true,
 	}
-	result := []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root", "USER=root", "LOGNAME=root"}
+	result := []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME=" + home, "USER=" + userName, "LOGNAME=" + userName}
 	for _, entry := range input {
 		key, _, ok := strings.Cut(entry, "=")
 		if ok && allowed[key] {

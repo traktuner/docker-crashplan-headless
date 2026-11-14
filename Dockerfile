@@ -147,7 +147,10 @@ RUN set -eux; \
     # Keep the updater from ever installing anything.
     touch ${CP_DIR}/upgrade; chmod 0400 ${CP_DIR}/upgrade; \
     rm -f /etc/machine-id; ln -s /config/machine-id /etc/machine-id; \
-    ln -s /config/.crashplan /root/.crashplan
+    ln -s /config/.crashplan /root/.crashplan; \
+    # A container started directly as another user creates its private
+    # runtime directory here when /run is not a tmpfs.
+    chmod 1777 /run
 
 # File names with umlauts need a UTF-8 locale (sun.jnu.encoding follows it).
 ENV LANG=C.UTF-8 \
