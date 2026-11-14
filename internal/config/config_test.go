@@ -1,8 +1,10 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -47,5 +49,27 @@ func TestWebPasswordFileAndStrictEnvironment(t *testing.T) {
 			t.Errorf("bad %s accepted", key)
 		}
 		env[key] = old
+	}
+}
+
+func TestEmptyEnvironmentStartsHeadlessWithStorageSources(t *testing.T) {
+	previous := readMountInfo
+	defer func() { readMountInfo = previous }()
+	readMountInfo = func() ([]byte, error) {
+		return []byte("1 0 0:1 / / rw - overlay overlay rw\n31 1 0:59 /tank /storage ro - zfs tank ro\n"), nil
+	}
+	c, err := Load(func(string) string { return "" })
+	if err != nil || c.Mode != "headless" || !c.SourceRootsDetected || len(c.SourceRoots) != 1 || c.SourceRoots[0] != "/storage" {
+		t.Fatal("container without settings did not start with defaults", c.SourceRoots, err)
+	}
+}
+
+func TestInvalidValueNamesItsVariable(t *testing.T) {
+	_, err := Load(func(key string) string {
+		return map[string]string{"CPH_SOURCE_ROOTS": `["/data"]`, "CPH_LOG_LEVEL": "loud-secret"}[key]
+	})
+	var variable *VariableError
+	if !errors.As(err, &variable) || variable.Name != "CPH_LOG_LEVEL" || !errors.Is(err, ErrConfiguration) || strings.Contains(err.Error(), "loud-secret") {
+		t.Fatal("invalid variable not named safely", err)
 	}
 }

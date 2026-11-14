@@ -156,6 +156,46 @@ try:
   assert bytes.fromhex(saved)==b'-Xms2G\n-Xmx1536M\r\n','saved heap arguments were rewritten'
   record('retained-heap-launch',heapMiB=1536,otherSizeOptionIgnored=True,crlf=True,savedBytesPreserved=True)
   stop(name)
+  # Drop-in start without any setting. The configuration was left by an image
+  # that ran as UID 1000; it is adopted, and /storage is detected as the source.
+  plain=volume('plain')
+  docker('run','--rm','--network','none','--entrypoint','sh','-v',plain+':/config:rw',image,'-ec',
+   'mkdir -p /config/conf /config/var; printf 0123456789abcdef0123456789abcdef > /config/machine-id; printf -- "-Xmx1536M\\n" > /config/conf/jvm_args; chmod 0777 /config/var; chown -R 1000:1000 /config')
+  def owner(name,path):return docker('exec',name,'stat','-c','%u:%g',path).stdout.strip()
+  def engine_user(name,pid):return docker('exec',name,'stat','-c','%u:%g','/proc/'+str(pid)).stdout.strip()
+  name='cph-smoke-'+nonce+'-defaults'
+  docker('run','-d','--name',name,'--network','none','--memory','3g','--memory-swap','3g',
+   '-v',plain+':/config:rw','-v',source+':/storage:ro',image);containers.append(name)
+  started=wait(name,lambda x:x['status']=='running' and x['native']['nativeReady'] and x['native']['eventsReady'])
+  assert engine_user(name,started['pid'])=='0:0','default engine user is not root'
+  assert owner(name,'/config/machine-id')=='0:0','configuration of another user not adopted'
+  assert docker('exec',name,'cat','/config/machine-id').stdout=='0123456789abcdef0123456789abcdef','device identity changed'
+  arguments=docker('exec',name,'cat','/proc/'+str(started['pid'])+'/cmdline').stdout.split('\0')
+  assert [arg for arg in arguments if arg.startswith('-Xmx')]==['-Xmx1536m'],'saved heap of the adopted configuration lost'
+  logs=docker('logs',name).stdout
+  assert '"sources_detected"' in logs and '/storage' in logs,'source detection not reported'
+  record('zero-setting-drop-in',engineUser='0:0',adoptedOwner=True,identityKept=True,sourcesDetected=True)
+  stop(name)
+  # USER_ID/GROUP_ID: the daemon prepares /config for the user and the engine runs as it.
+  name='cph-smoke-'+nonce+'-user-id'
+  docker('run','-d','--name',name,'--network','none','--read-only','--tmpfs','/tmp:rw,nosuid,nodev','--tmpfs','/run:rw,nosuid,nodev,noexec',
+   '--memory','3g','--memory-swap','3g','-e','USER_ID=1000','-e','GROUP_ID=1000',
+   '-v',plain+':/config:rw','-v',source+':/storage:ro',image);containers.append(name)
+  started=wait(name,lambda x:x['status']=='running' and x['native']['nativeReady'] and x['native']['eventsReady'])
+  assert engine_user(name,started['pid'])=='1000:1000','engine does not run as USER_ID'
+  assert owner(name,'/config/machine-id')=='1000:1000' and owner(name,'/config/cph')=='1000:1000','configuration not prepared for USER_ID'
+  daemon=docker('exec',name,'stat','-c','%u','/proc/1').stdout.strip()
+  record('user-id-switch',engineUser='1000:1000',configOwner='1000:1000',initUser=daemon)
+  stop(name)
+  # A container started directly as a non-root user keeps that user.
+  name='cph-smoke-'+nonce+'-container-user'
+  docker('run','-d','--name',name,'--network','none','--read-only','--tmpfs','/tmp:rw,nosuid,nodev','--tmpfs','/run:rw,nosuid,nodev,noexec',
+   '--user','1000:1000','--memory','3g','--memory-swap','3g',
+   '-v',plain+':/config:rw','-v',source+':/storage:ro',image);containers.append(name)
+  started=wait(name,lambda x:x['status']=='running' and x['native']['nativeReady'] and x['native']['eventsReady'])
+  assert engine_user(name,started['pid'])=='1000:1000','engine does not run as the container user'
+  record('container-user',engineUser='1000:1000')
+  stop(name)
 except BaseException as error:
  report['failure']={'category':type(error).__name__,'message':str(error)}
  raise

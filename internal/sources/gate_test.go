@@ -2,6 +2,7 @@ package sources
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -44,14 +45,56 @@ func TestSourceGateRefusesMissingMountBeforeOpeningPath(t *testing.T) {
 	}
 }
 
-func TestMissingDatasetParentDirectoryNeedsExplicitSentinel(t *testing.T) {
+func TestSubdirectoryBindWithoutSentinelMustHaveContent(t *testing.T) {
 	for _, item := range []struct {
 		root, sentinel string
-		ready          bool
-	}{{"/", "", true}, {"/unmounted-child", "", false}, {"/subdirectory", ".backup-source", true}} {
-		if err := sourceRequirement(mountRecord{Root: item.root}, item.sentinel); (err == nil) != item.ready {
-			t.Fatal("missing dataset accepted or explicit subdirectory rejected", err)
+		content        bool
+	}{{"/", "", false}, {"/subdirectory", "", true}, {"/subdirectory", ".backup-source", false}} {
+		if requiresContent(mountRecord{Root: item.root}, item.sentinel) != item.content {
+			t.Fatal("content requirement wrong", item)
 		}
+	}
+}
+
+func TestDefaultPolicyAdmitsRealFilesystemsButNotPseudoOnes(t *testing.T) {
+	g, err := New([]string{"/data"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for fs, want := range map[string]bool{"zfs": true, "nfs4": true, "cifs": true, "fuse.shfs": true, "fuse.mergerfs": true, "ext3": true, "tmpfs": false, "overlay": false, "proc": false} {
+		_, err := g.sourceMount([]byte("31 20 0:59 / /data ro - "+fs+" source ro\n"), "/data")
+		if (err == nil) != want {
+			t.Errorf("%s: %v", fs, err)
+		}
+	}
+}
+
+func TestDetectRootsFindsEveryMountBelowStorage(t *testing.T) {
+	raw := []byte("1 0 0:1 / / rw - overlay overlay rw\n" +
+		"31 1 0:59 /tank/photos /storage/photos ro - zfs tank ro\n" +
+		"32 1 0:60 /export /storage/nas ro - nfs4 nas:/export ro\n" +
+		"33 1 0:61 / /storage/nas/inner ro - ext4 /dev/sdb1 ro\n" +
+		"34 1 0:62 / /storageextra ro - ext4 /dev/sdc1 ro\n" +
+		"35 1 0:63 / /storage/tmp rw - tmpfs tmpfs rw\n")
+	got := DetectRoots(raw, "/storage")
+	want := []string{"/storage/nas", "/storage/nas/inner", "/storage/photos"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatal(got)
+	}
+	if got := DetectRoots([]byte("1 0 0:1 / / rw - overlay overlay rw\n"), "/storage"); len(got) != 1 || got[0] != "/storage" {
+		t.Fatal("without mounts the base is not watched", got)
+	}
+}
+
+func TestConfigMountMustBeAMountButAnyRealFilesystem(t *testing.T) {
+	for fs, want := range map[string]bool{"zfs": true, "nfs4": true, "fuse.shfs": true, "tmpfs": false} {
+		_, err := ConfigMountIn([]byte("31 20 0:59 / /config rw - "+fs+" source rw\n"), "/config")
+		if (err == nil) != want {
+			t.Errorf("%s: %v", fs, err)
+		}
+	}
+	if _, err := ConfigMountIn([]byte("1 0 0:1 / / rw - overlay overlay rw\n"), "/config"); !errors.Is(err, ErrNotReady) {
+		t.Fatal("unmounted configuration accepted", err)
 	}
 }
 

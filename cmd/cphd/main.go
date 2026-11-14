@@ -26,6 +26,7 @@ import (
 	"github.com/traktuner/crashplan-headless/internal/lifecycle"
 	"github.com/traktuner/crashplan-headless/internal/logx"
 	"github.com/traktuner/crashplan-headless/internal/restore"
+	"github.com/traktuner/crashplan-headless/internal/runas"
 	"github.com/traktuner/crashplan-headless/internal/sources"
 	"github.com/traktuner/crashplan-headless/internal/statefile"
 	"github.com/traktuner/crashplan-headless/internal/supervise"
@@ -34,7 +35,12 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		slog.Error("service_failed", "category", safeError(err))
+		var variable *config.VariableError
+		if errors.As(err, &variable) {
+			slog.Error("service_failed", "category", safeError(err), "variable", variable.Name)
+		} else {
+			slog.Error("service_failed", "category", safeError(err))
+		}
 		os.Exit(1)
 	}
 }
@@ -50,6 +56,8 @@ func safeError(err error) string {
 		return "CONFIG_INITIALIZATION_FAILED"
 	case errors.Is(err, lifecycle.ErrVersionDrift):
 		return "ENGINE_VERSION_DRIFT"
+	case errors.Is(err, runas.ErrPrivileges):
+		return "USER_SWITCH_FAILED"
 	case errors.Is(err, config.ErrConfiguration):
 		return "INVALID_CONFIGURATION"
 	case errors.Is(err, statefile.ErrState):
@@ -62,9 +70,6 @@ func safeError(err error) string {
 }
 
 func run() error {
-	if os.Geteuid() != 0 || (os.Getenv("USER_ID") != "" && os.Getenv("USER_ID") != "0") || (os.Getenv("GROUP_ID") != "" && os.Getenv("GROUP_ID") != "0") {
-		return config.ErrConfiguration
-	}
 	cfg, err := config.Load(os.Getenv)
 	if err != nil {
 		return err
@@ -76,11 +81,25 @@ func run() error {
 	}
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer cancel()
-	if err := sources.MountedLocal(filepath.Dir(cfg.StateDir)); err != nil {
+	if cfg.SourceRootsDetected {
+		logger.Info("sources_detected", "roots", cfg.SourceRoots)
+	}
+	identity := runas.Resolve(os.Getenv, logger)
+	configRoot := filepath.Dir(cfg.StateDir)
+	if identity.Switch || os.Geteuid() == 0 {
+		// Files left by an image that ran as another user become usable.
+		runas.TakeOwnership(configRoot, identity.UID, identity.GID, logger)
+		if err := runas.PrepareDir(filepath.Dir(cfg.Socket), identity); err != nil {
+			return statefile.ErrState
+		}
+	}
+	if err := runas.Apply(identity); err != nil {
+		logger.Error("user_switch_failed", "uid", identity.UID, "gid", identity.GID, "hint", "the container needs the SETUID and SETGID capabilities, or start it directly as that user")
 		return err
 	}
+	logger.Info("engine_user", "uid", identity.UID, "gid", identity.GID, "name", identity.Name)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
 	store, err := statefile.Open(cfg.StateDir)
 	if err != nil {
 		return err
@@ -117,6 +136,7 @@ func run() error {
 		return err
 	}
 	native.UseSessionStore(store)
+	native.SetUserHome(identity.Home)
 	defer native.CloseEvents()
 	scans, err := engine.NewScans(native, store)
 	if err != nil {
@@ -141,12 +161,12 @@ func run() error {
 	if err != nil {
 		return initcfg.ErrInit
 	}
-	helpers, err := restore.NewHelpers(restore.HelperOptions{Native: native, Destinations: restoreRoots, Binary: "/usr/local/crashplan/bin/restore-tool", ExpectedSHA: strings.TrimSpace(string(helperHash)), DataDir: filepath.Join(filepath.Dir(cfg.StateDir), "var"), LogDir: filepath.Join(filepath.Dir(cfg.StateDir), "log"), UserName: "root", Console: console, Logger: logger})
+	helpers, err := restore.NewHelpers(restore.HelperOptions{Native: native, Destinations: restoreRoots, Binary: "/usr/local/crashplan/bin/restore-tool", ExpectedSHA: strings.TrimSpace(string(helperHash)), DataDir: filepath.Join(filepath.Dir(cfg.StateDir), "var"), LogDir: filepath.Join(filepath.Dir(cfg.StateDir), "log"), UserName: identity.Name, Console: console, Logger: logger})
 	if err != nil {
 		return err
 	}
 	owner := lifecycle.New(lifecycle.Options{Native: native, Scans: scans, Restores: helpers, Logger: logger, Version: version, Build: build})
-	restores, err := restore.NewService(native, restoreRoots, store, "root")
+	restores, err := restore.NewService(native, restoreRoots, store, identity.Name)
 	if err != nil {
 		logger.Warn("restore_journal_unavailable")
 		restores = nil
@@ -155,7 +175,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	runtime, err := supervise.New(supervise.Options{Command: []string{cfg.Launch}, Environment: config.NativeEnvironment(os.Environ(), cfg.RestoreRoots...), Sources: gate, Generations: owner, Failures: owner.Failures(), Logger: logger, Stdout: console, Stderr: console, StopGrace: cfg.StopGrace})
+	runtime, err := supervise.New(supervise.Options{Command: []string{cfg.Launch}, Environment: config.NativeEnvironment(os.Environ(), identity.Name, identity.Home, cfg.RestoreRoots...), Sources: gate, Generations: owner, Failures: owner.Failures(), Logger: logger, Stdout: console, Stderr: console, StopGrace: cfg.StopGrace})
 	if err != nil {
 		return err
 	}

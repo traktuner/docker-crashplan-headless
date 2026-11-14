@@ -16,14 +16,13 @@ log() { echo "[cph-launch] $*" >&2; }
 is_true() { case "${1,,}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
 
 # --- heap size -------------------------------------------------------------
-# CRASHPLAN_SRV_MAX_MEM keeps the jlesage/crashplan-pro semantics (e.g. 40G).
+# CRASHPLAN_SRV_MAX_MEM uses the usual CrashPlan image semantics (e.g. 40G).
+# The start never fails on a heap value: an unusable one is reported and the
+# next source is used (saved conf/jvm_args, then 1024M).
 heap_mb() {
     local v="$1" num unit
-    if [[ ! "$v" =~ ^([0-9]+)([gGmMkK])$ ]]; then
-        log "ERROR: invalid CRASHPLAN_SRV_MAX_MEM '$v' (expected e.g. 4096M or 40G)"
-        exit 1
-    fi
-    num="${BASH_REMATCH[1]}"; unit="${BASH_REMATCH[2],,}"
+    [[ "$v" =~ ^([0-9]+)([gGmMkK])$ ]] || return 1
+    num="$((10#${BASH_REMATCH[1]}))"; unit="${BASH_REMATCH[2],,}"
     case "$unit" in
         g) echo $((num * 1024)) ;;
         m) echo "$num" ;;
@@ -32,24 +31,24 @@ heap_mb() {
 }
 
 SAVED_HEAP="$CP_DIR/conf/jvm_args"
+XMX_MB=""
 if [[ -n "${CRASHPLAN_SRV_MAX_MEM:-}" ]]; then
-    XMX_MB="$(heap_mb "$CRASHPLAN_SRV_MAX_MEM")"
-elif [[ -f "$SAVED_HEAP" ]] && grep -q -- '-Xmx' "$SAVED_HEAP"; then
-    # Use the first complete -Xmx line; trailing whitespace or CR is accepted.
-    # A saved heap that cannot be read stops the start. It never becomes the
-    # 1024M default silently.
-    saved="$(sed -nE '/^-Xmx[0-9]+[gGmMkK][[:space:]]*$/{s/^-Xmx([0-9]+[gGmMkK]).*/\1/p;q}' "$SAVED_HEAP")"
-    if [[ -z "$saved" ]]; then
-        log "ERROR: conf/jvm_args has an unsupported -Xmx value; set CRASHPLAN_SRV_MAX_MEM (e.g. 4096M or 40G)"
-        exit 1
-    fi
-    XMX_MB="$(heap_mb "$saved")"
-else
-    XMX_MB=1024
+    XMX_MB="$(heap_mb "$CRASHPLAN_SRV_MAX_MEM")" ||
+        log "WARNING: CRASHPLAN_SRV_MAX_MEM is not a size such as 4096M or 40G; ignored"
 fi
+if [[ -z "$XMX_MB" && -r "$SAVED_HEAP" ]]; then
+    # The first -Xmx<size> token anywhere in the file; comments are skipped.
+    saved="$(grep -v '^[[:space:]]*#' "$SAVED_HEAP" | grep -oE '(^|[[:space:]])-Xmx[0-9]+[gGmMkK]([[:space:]]|$)' | head -1 | tr -d '[:space:]' || true)"
+    if [[ -n "$saved" ]]; then
+        XMX_MB="$(heap_mb "${saved#-Xmx}")" || XMX_MB=""
+    elif grep -q -- '-Xmx' "$SAVED_HEAP"; then
+        log "WARNING: conf/jvm_args has no usable -Xmx value; using 1024M"
+    fi
+fi
+XMX_MB="${XMX_MB:-1024}"
 if (( XMX_MB < 1024 )); then
-    log "ERROR: heap must be at least 1024M (got ${XMX_MB}M)"
-    exit 1
+    log "WARNING: heap ${XMX_MB}M is below the 1024M minimum; using 1024M"
+    XMX_MB=1024
 fi
 
 # --- base arguments (identical to the stock launcher) -----------------------
@@ -137,6 +136,11 @@ fi
 
 # --- agent -------------------------------------------------------------------
 # The agent also enforces every restore helper IPC request.
+# A non-root engine has no home in the image. The daemon passes HOME and USER;
+# /config/.crashplan is the same directory root reaches through /root.
+if [[ "$(id -u)" != 0 ]]; then
+    args+=(-Duser.home="${HOME:-/config}" -Duser.name="${USER:-crashplan}")
+fi
 args+=(-javaagent:"$CP_DIR/cph/cph-agent.jar")
 
 # --- extra options, last so they can override everything above ---------------

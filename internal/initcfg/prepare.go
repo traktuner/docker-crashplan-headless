@@ -23,10 +23,11 @@ import (
 var ErrInit = errors.New("CONFIG_INITIALIZATION_FAILED")
 var versionPattern = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){1,3}(?:[-a-zA-Z0-9.]+)?$`)
 var heapPattern = regexp.MustCompile(`^[1-9][0-9]{0,8}[gGmMkK]$`)
-var hostPattern = regexp.MustCompile(`<serviceHost>[^<]*</serviceHost>`)
 
-// The launcher refuses a smaller heap. Refuse it here before any saved value changes.
+// The launcher raises a smaller heap to this value.
 const minimumHeapMiB = 1024
+
+var hostPattern = regexp.MustCompile(`<serviceHost>[^<]*</serviceHost>`)
 
 type Options struct {
 	Root, Defaults, Version, Heap string
@@ -60,12 +61,14 @@ func Prepare(options Options) error {
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
+	// A heap value that cannot be used is ignored with a warning. The saved
+	// value stays unchanged and the launcher falls back to it.
 	if options.Heap != "" {
 		if !heapPattern.MatchString(options.Heap) {
-			return refuse(options.Logger, "CRASHPLAN_SRV_MAX_MEM", "invalid_format")
-		}
-		if heapMiB(options.Heap) < minimumHeapMiB {
-			return refuse(options.Logger, "CRASHPLAN_SRV_MAX_MEM", "below_minimum")
+			options.Logger.Warn("heap_setting_ignored", "item", "CRASHPLAN_SRV_MAX_MEM", "reason", "invalid_format", "expected", "e.g. 4096M or 40G")
+			options.Heap = ""
+		} else if heapMiB(options.Heap) < minimumHeapMiB {
+			options.Logger.Warn("heap_setting_raised", "item", "CRASHPLAN_SRV_MAX_MEM", "minimum", "1024M")
 		}
 	}
 	raw := options.MountInfo
@@ -76,8 +79,11 @@ func Prepare(options Options) error {
 			return ErrInit
 		}
 	}
-	if err := sources.LocalMountIn(raw, options.Root); err != nil {
+	if fsType, err := sources.ConfigMountIn(raw, options.Root); err != nil {
+		options.Logger.Error("configuration_not_mounted", "hint", "mount a persistent volume at /config")
 		return err
+	} else if !sources.LocalFilesystem(fsType) {
+		options.Logger.Warn("configuration_filesystem_unusual", "filesystem", fsType, "hint", "native databases expect a local filesystem")
 	}
 	info, err := os.Lstat(options.Root)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
@@ -112,10 +118,18 @@ func Prepare(options Options) error {
 		if err := os.Mkdir(path, 0700); err != nil && !errors.Is(err, os.ErrExist) {
 			return ErrInit
 		}
-		if info, err := os.Lstat(path); err != nil {
+		info, err := os.Lstat(path)
+		if err != nil {
 			return ErrInit
 		} else if !info.IsDir() {
 			return refuse(options.Logger, name, "not_directory")
+		}
+		// The restore helper keeps private pipes in var. Remove group and
+		// other write access left by another image's umask.
+		if name == "var" && info.Mode().Perm()&0022 != 0 {
+			if os.Chmod(path, info.Mode().Perm()&^0022) != nil {
+				return refuse(options.Logger, name, "permissions_not_adjustable")
+			}
 		}
 	}
 	identity := filepath.Join(options.Root, "machine-id")
@@ -248,17 +262,12 @@ func copyDefaults(source, destination string) error {
 	})
 }
 
-// unsafeReason explains why an existing file is not read or replaced. A file
-// must be regular, owned by the daemon user and have exactly one name.
+// unsafeReason explains why an existing file is not read or replaced. Only a
+// regular file is used: a symlink or directory at a configuration file name is
+// left alone. Owner and link count do not matter; a replacement is a new file.
 func unsafeReason(info os.FileInfo) string {
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	switch {
-	case !ok || !info.Mode().IsRegular():
+	if !info.Mode().IsRegular() {
 		return "not_regular_file"
-	case stat.Uid != uint32(os.Geteuid()):
-		return "foreign_owner"
-	case stat.Nlink != 1:
-		return "hard_linked"
 	}
 	return ""
 }

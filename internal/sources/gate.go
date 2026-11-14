@@ -27,7 +27,11 @@ const (
 	FilesystemRejected Reason = "SOURCE_FILESYSTEM_REJECTED"
 	SentinelMissing    Reason = "SOURCE_SENTINEL_MISSING"
 	IdentityChanged    Reason = "SOURCE_IDENTITY_CHANGED"
+	SourceEmpty        Reason = "SOURCE_EMPTY"
 )
+
+// DefaultBase is where sources are discovered when CPH_SOURCE_ROOTS is unset.
+const DefaultBase = "/storage"
 
 type mountRecord struct{ ID, Device, Root, Point, FS string }
 type identity struct {
@@ -43,14 +47,14 @@ type Gate struct {
 }
 
 func New(roots []string, sentinel string, policies ...string) (*Gate, error) {
-	policy := "local"
+	policy := "any"
 	if len(policies) > 1 {
 		return nil, ErrConfiguration
 	}
 	if len(policies) == 1 && policies[0] != "" {
 		policy = policies[0]
 	}
-	if policy != "local" && policy != "mounted" {
+	if policy != "local" && policy != "mounted" && policy != "any" {
 		return nil, ErrConfiguration
 	}
 	if len(roots) == 0 || len(roots) > 128 {
@@ -103,33 +107,91 @@ var filesystemMagic = map[string]int64{
 	"nfs": 0x6969, "nfs4": 0x6969, "cifs": 0xff534d42,
 }
 
-func admittedMount(raw []byte, path string, remote bool) (mountRecord, error) {
+// Pseudo and in-memory filesystems never hold backup data. A source with one
+// of these types is a missing bind, not a real source.
+var pseudoFilesystems = map[string]bool{
+	"proc": true, "sysfs": true, "tmpfs": true, "devtmpfs": true, "devpts": true, "ramfs": true,
+	"overlay": true, "autofs": true, "cgroup": true, "cgroup2": true, "mqueue": true, "nsfs": true,
+	"securityfs": true, "debugfs": true, "tracefs": true, "bpf": true, "configfs": true, "fusectl": true,
+	"hugetlbfs": true, "pstore": true, "binfmt_misc": true, "efivarfs": true, "rpc_pipefs": true,
+}
+
+func LocalFilesystem(fs string) bool {
+	switch fs {
+	case "zfs", "ext4", "xfs", "btrfs":
+		return true
+	}
+	return false
+}
+
+func admittedMount(raw []byte, path, policy string) (mountRecord, error) {
 	m, err := parseMount(raw, path)
 	if err != nil {
 		return m, err
 	}
-	switch m.FS {
-	case "zfs", "ext4", "xfs", "btrfs":
+	switch {
+	case LocalFilesystem(m.FS):
 		return m, nil
-	case "nfs", "nfs4", "cifs":
-		if remote {
+	case m.FS == "nfs" || m.FS == "nfs4" || m.FS == "cifs":
+		if policy != "local" {
 			return m, nil
 		}
+	case policy == "any" && !pseudoFilesystems[m.FS]:
+		return m, nil
 	}
 	return mountRecord{}, FilesystemRejected
 }
 func selectMount(raw []byte, path string) (mountRecord, error) {
-	return admittedMount(raw, path, false)
+	return admittedMount(raw, path, "local")
 }
 func (g *Gate) sourceMount(raw []byte, path string) (mountRecord, error) {
-	return admittedMount(raw, path, g.policy == "mounted")
+	return admittedMount(raw, path, g.policy)
 }
 
-func sourceRequirement(mount mountRecord, sentinel string) error {
-	if mount.Root != "/" && sentinel == "" {
-		return SentinelMissing
+// requiresContent reports whether a source must be non-empty to be ready. A
+// subdirectory bind without a sentinel is accepted when it has content: a
+// missing host mount leaves an empty directory behind.
+func requiresContent(mount mountRecord, sentinel string) bool {
+	return mount.Root != "/" && sentinel == ""
+}
+
+// ConfigMountIn reports the filesystem of the configuration mount. The path
+// must be its own mount, so container removal cannot discard the device identity.
+func ConfigMountIn(raw []byte, path string) (string, error) {
+	m, err := parseMount(raw, path)
+	if err != nil {
+		return "", err
 	}
-	return nil
+	if pseudoFilesystems[m.FS] {
+		return m.FS, FilesystemRejected
+	}
+	return m.FS, nil
+}
+
+// DetectRoots returns every real mount at or below base, sorted. Nested mounts
+// are listed too, so each one is checked before the engine starts.
+// Without such a mount it returns base itself, which the gate then reports as
+// not mounted until a volume appears there.
+func DetectRoots(raw []byte, base string) []string {
+	var found []string
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	scanner.Buffer(make([]byte, 4096), 1<<20)
+	for scanner.Scan() {
+		fields := strings.Split(scanner.Text(), " ")
+		separator := slices.Index(fields, "-")
+		if len(fields) < 10 || separator < 6 || len(fields) < separator+4 || pseudoFilesystems[fields[separator+1]] {
+			continue
+		}
+		point := unescape(fields[4])
+		if (point == base || strings.HasPrefix(point, base+"/")) && !slices.Contains(found, point) && !strings.ContainsAny(point, "\x00\r\n") {
+			found = append(found, point)
+		}
+	}
+	slices.Sort(found)
+	if len(found) == 0 || len(found) > 128 {
+		return []string{base}
+	}
+	return found
 }
 
 // MountedLocal verifies a local mountpoint without opening its filesystem.
@@ -161,9 +223,6 @@ func (g *Gate) Check() error {
 		if err != nil {
 			return err
 		}
-		if err := sourceRequirement(mount, g.sentinel); err != nil {
-			return err
-		}
 		fd, err := syscall.Open(root, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 		if err != nil {
 			return ErrNotReady
@@ -173,7 +232,8 @@ func (g *Gate) Check() error {
 		var fs syscall.Statfs_t
 		statErr := syscall.Fstat(fd, &stat)
 		fsErr := syscall.Fstatfs(fd, &fs)
-		if statErr != nil || fsErr != nil || int64(fs.Type) != filesystemMagic[mount.FS] {
+		magic, known := filesystemMagic[mount.FS]
+		if statErr != nil || fsErr != nil || (known && int64(fs.Type) != magic) {
 			dir.Close()
 			return ErrNotReady
 		}
@@ -191,10 +251,13 @@ func (g *Gate) Check() error {
 				return SentinelMissing
 			}
 		}
-		_, readErr := dir.Readdirnames(1)
+		names, readErr := dir.Readdirnames(1)
 		closeErr := dir.Close()
 		if (readErr != nil && !errors.Is(readErr, io.EOF)) || closeErr != nil {
 			return IdentityChanged
+		}
+		if requiresContent(mount, g.sentinel) && len(names) == 0 {
+			return SourceEmpty
 		}
 		identities = append(identities, identity{mount, uint64(stat.Dev), stat.Ino})
 	}
