@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 import type { FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, ArrowRight } from 'lucide-react'
-import { api } from '../../shared/api'
+import { api, APIError } from '../../shared/api'
 import type { LoginInfo, LoginResult } from '../../shared/api'
 import { text, ErrorNotice, Loading, PageTitle } from '../../shared/components'
 import { AccountDevices } from './AccountDevices'
@@ -47,9 +47,34 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
       void client.invalidateQueries({ queryKey: ['state'] })
     }
   }, [ssoState.data, client])
+  // Like the desktop app, find the account's server from the email address;
+  // the address field appears only when that is not possible or wanted.
+  const [manualServer, setManualServer] = useState(false)
   const configuration = useMutation({
-    mutationFn: () => api.accountConfiguration(info),
-    onSuccess: (data) => setLoginType(data.loginType),
+    mutationFn: async () => {
+      let resolved = info
+      if (!manualServer) {
+        try {
+          const found = await api.accountAuthority(info.username)
+          resolved = { ...info, serverAddress: found.serverAddress }
+        } catch (error) {
+          const code = error instanceof APIError ? error.code : ''
+          // A saved server still works when the lookup service is unreachable.
+          if (!(code === 'NATIVE_AUTHORITY_UNAVAILABLE' && info.serverAddress)) {
+            if (code === 'NATIVE_AUTHORITY_REQUIRED') setManualServer(true)
+            throw error
+          }
+        }
+        setInfo(resolved)
+      }
+      const config = await api.accountConfiguration(resolved)
+      return { config, resolved }
+    },
+    onSuccess: ({ config, resolved }) => {
+      setLoginType(config.loginType)
+      // Browser sign-in (password and TOTP on the CrashPlan page) starts at once.
+      if (config.loginType === 'cloud_sso') beginSSO.mutate(resolved)
+    },
   })
   const login = useMutation({
     mutationFn: () => api.accountLogin(info, password),
@@ -60,7 +85,7 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
     onSettled: () => setPassword(''),
   })
   const beginSSO = useMutation({
-    mutationFn: () => api.accountSSO(info),
+    mutationFn: (value: LoginInfo) => api.accountSSO(value),
     onSuccess: setSSO,
   })
   const cancelSSO = useMutation({
@@ -88,7 +113,7 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
     e.preventDefault()
     if (!loginType) configuration.mutate()
     else if (loginType === 'local') login.mutate()
-    else beginSSO.mutate()
+    else beginSSO.mutate(info)
   }
   return (
     <>
@@ -128,15 +153,25 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
                 required
               />
             </label>
-            <label>
-              Authority server
-              <input
-                value={info.serverAddress}
-                onChange={(e) => field('serverAddress', e.target.value)}
-                required
-                spellCheck={false}
-              />
-            </label>
+            {manualServer ? (
+              <label>
+                Server address
+                <input
+                  value={info.serverAddress}
+                  onChange={(e) => field('serverAddress', e.target.value)}
+                  required
+                  spellCheck={false}
+                />
+              </label>
+            ) : (
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setManualServer(true)}
+              >
+                Use a specific server address
+              </button>
+            )}
             <label className="checkbox">
               <input
                 type="checkbox"
@@ -231,8 +266,9 @@ export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
             {sso && (
               <div className="sso">
                 <p>
-                  Open your provider to sign in. Leave this page open while you
-                  complete authentication.
+                  Open the sign-in page and sign in with your password and
+                  verification code. When it says you can close the window,
+                  return here and confirm the account. Keep this page open.
                 </p>
                 {sso.providers.map((p) => (
                   <a

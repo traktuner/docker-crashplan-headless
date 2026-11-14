@@ -292,6 +292,20 @@ func (s *Server) handler(local bool) http.Handler {
 		writeData(w, 200, result)
 		return nil
 	})
+	handle("POST /api/v1/account/authority", "account.authority", true, func(w http.ResponseWriter, r *http.Request, _ auth.Session) error {
+		var in struct {
+			Username string `json:"username"`
+		}
+		if err := decode(w, r, &in); err != nil {
+			return err
+		}
+		address, err := s.native.DiscoverAuthority(r.Context(), in.Username)
+		if err != nil {
+			return err
+		}
+		writeData(w, 200, map[string]string{"serverAddress": address})
+		return nil
+	})
 	handle("POST /api/v1/account/configuration", "account.configuration", true, func(w http.ResponseWriter, r *http.Request, _ auth.Session) error {
 		var in engine.LoginInfo
 		if err := decode(w, r, &in); err != nil {
@@ -422,6 +436,10 @@ func errorCode(err error) string {
 			return "NATIVE_LOGIN_THROTTLED"
 		case "SERVER_UNAVAILABLE":
 			return "NATIVE_AUTHORITY_UNAVAILABLE"
+		case "AUTHORITY_REQUIRED":
+			return "NATIVE_AUTHORITY_REQUIRED"
+		case "ACCOUNT_NOT_FOUND":
+			return "NATIVE_ACCOUNT_NOT_FOUND"
 		case "REGISTRATION_KEY_REQUIRED":
 			return "NATIVE_REGISTRATION_KEY_REQUIRED"
 		case "REGISTRATION_REJECTED":
@@ -534,6 +552,12 @@ func writeError(w http.ResponseWriter, err error) {
 	case "NATIVE_AUTHORITY_UNAVAILABLE":
 		status = 503
 		message = "The account authority is unavailable. Try sign-in again later."
+	case "NATIVE_AUTHORITY_REQUIRED":
+		status = 422
+		message = "The server for this account could not be determined. Enter the server address."
+	case "NATIVE_ACCOUNT_NOT_FOUND":
+		status = 422
+		message = "CrashPlan found no account with this email address or username."
 	case "NATIVE_REGISTRATION_KEY_REQUIRED":
 		status = 422
 		message = "The authority supplied no registration key. Enter a valid registration key before creating the account."
