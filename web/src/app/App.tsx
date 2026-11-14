@@ -74,7 +74,19 @@ export function App() {
       ? native.data.nativeSession
       : undefined
   const needsSignIn = signedIn === false
-  const shown: Page = needsSignIn && page !== 'system' ? 'account' : page
+  const ungated = (p: Page) => p === 'account' || p === 'system'
+  const shown: Page = needsSignIn && !ungated(page) ? 'account' : page
+  // Move to the account page itself, so the user stays there after sign-in
+  // and sees its result and any device choice CrashPlan still needs.
+  useEffect(() => {
+    if (needsSignIn && !ungated(page)) {
+      setPage('account')
+      history.replaceState(null, '', '#account')
+    }
+  }, [needsSignIn, page])
+  // Until the session state is known, gated pages wait instead of starting
+  // reads that may fail. If the state cannot be read, pages open as before.
+  const checking = !!session && native.isPending && !ungated(page)
   useEffect(() => {
     const pop = () => setPage(pageFromHash(location.hash))
     window.addEventListener('popstate', pop)
@@ -181,7 +193,9 @@ export function App() {
     >
       <ErrorNotice error={sessionError} />
       <Suspense fallback={<Loading />}>
-        {shown === 'overview' ? (
+        {checking ? (
+          <Loading />
+        ) : shown === 'overview' ? (
           <Overview navigate={navigate} />
         ) : shown === 'activity' ? (
           <BackupActivity />

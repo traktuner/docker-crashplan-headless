@@ -22,7 +22,11 @@ export function Activity() {
     queryKey: ['set-details'],
     queryFn: () => api.backupSetDetails(),
   })
-  const alerts = useQuery({ queryKey: ['alerts'], queryFn: () => api.alerts() })
+  const alerts = useQuery({
+    queryKey: ['alerts'],
+    queryFn: () => api.alerts(),
+    refetchInterval: 15000,
+  })
   const history = useQuery({
     queryKey: ['history'],
     queryFn: () => api.history(),

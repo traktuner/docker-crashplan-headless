@@ -62,7 +62,7 @@ See [Configuration](docs/environment.md) for every option, and which ones are re
 Your device identity, settings, backup sets, cache and heap are kept, and CrashPlan keeps backing up.
 Sign in once with the same CrashPlan account: the web interface opens on the sign-in page
 until this is done, or run `cphctl login <username> <server>` with the password on stdin.
-The device keeps its archive; no device adoption is needed.
+The device identity in `/config` is reused, so no device adoption should be needed.
 `USER_ID`, `GROUP_ID`, `SUP_GROUP_IDS`, `UMASK` and `CRASHPLAN_SRV_MAX_MEM` work the same way.
 One difference: without `USER_ID` the engine runs as root, so it can read every file you mount.
 Files in `/config` that belong to another user are taken over automatically.
