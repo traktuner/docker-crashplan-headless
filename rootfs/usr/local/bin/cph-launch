@@ -19,7 +19,7 @@ is_true() { case "${1,,}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
 # CRASHPLAN_SRV_MAX_MEM uses the usual CrashPlan image semantics (e.g. 40G).
 # The start never fails on a heap value: an unusable one is reported and the
 # next source is used (saved conf/jvm_args, then 1024M).
-# Prints MiB for a size from 1024M to 4T; anything else returns 1.
+# Prints MiB for a size from 1024M to 4096G; anything else returns 1.
 heap_mb() {
     local v="$1" num unit mb
     [[ "$v" =~ ^0*([1-9][0-9]{0,8})([gGmMkK])$ ]] || return 1
@@ -37,14 +37,14 @@ SAVED_HEAP="$CP_DIR/conf/jvm_args"
 XMX_MB=""
 if [[ -n "${CRASHPLAN_SRV_MAX_MEM:-}" ]]; then
     XMX_MB="$(heap_mb "$CRASHPLAN_SRV_MAX_MEM")" ||
-        log "WARNING: CRASHPLAN_SRV_MAX_MEM is not a size from 1024M to 4T (e.g. 40G); ignored"
+        log "WARNING: CRASHPLAN_SRV_MAX_MEM is not a size from 1024M to 4096G (e.g. 40G); ignored"
 fi
 if [[ -z "$XMX_MB" && -r "$SAVED_HEAP" ]]; then
     # The first -Xmx<size> token anywhere in the file; comments are skipped.
     saved="$(grep -v '^[[:space:]]*#' "$SAVED_HEAP" | grep -oE '(^|[[:space:]])-Xmx[0-9]+[gGmMkK]([[:space:]]|$)' | head -1 | tr -d '[:space:]' || true)"
     if [[ -n "$saved" ]]; then
         XMX_MB="$(heap_mb "${saved#-Xmx}")" ||
-            { XMX_MB=""; log "WARNING: conf/jvm_args heap is outside 1024M to 4T; using 1024M"; }
+            { XMX_MB=""; log "WARNING: conf/jvm_args heap is outside 1024M to 4096G; using 1024M"; }
     elif grep -q -- '-Xmx' "$SAVED_HEAP"; then
         log "WARNING: conf/jvm_args has no usable -Xmx value; using 1024M"
     fi

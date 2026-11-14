@@ -39,7 +39,8 @@ func (i Identity) Root() bool { return i.UID == 0 }
 func Resolve(get func(string) string, logger *slog.Logger) Identity {
 	id := Identity{UID: os.Geteuid(), GID: os.Getegid(), Umask: -1}
 	if value := get("UMASK"); value != "" {
-		if mask, err := strconv.ParseUint(value, 8, 32); err == nil && mask <= 0777 {
+		// The owner must keep full access to its own private files.
+		if mask, err := strconv.ParseUint(value, 8, 32); err == nil && mask <= 0777 && mask&0700 == 0 {
 			id.Umask = int(mask)
 		} else {
 			logger.Warn("user_setting_ignored", "item", "UMASK", "reason", "invalid_octal")
@@ -147,15 +148,17 @@ func TakeOwnership(root string, uid, gid int, logger *slog.Logger) {
 	}
 }
 
-// Busy reports whether an engine holds the lock file at path.
+// Busy reports whether an engine holds the lock file at path. Only a lock
+// conflict counts; any other error is left to the state store's own lock.
+// The file is opened for writing because NFS emulates flock with write locks.
 func Busy(path string) bool {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return false
 	}
 	defer syscall.Close(fd)
-	if syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB) != nil {
-		return true
+	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
 	}
 	syscall.Flock(fd, syscall.LOCK_UN)
 	return false

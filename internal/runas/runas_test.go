@@ -32,6 +32,9 @@ func TestRootDefaultsAndUserSettings(t *testing.T) {
 	if id.UID != 568 || id.GID != 100 || len(id.Groups) != 2 || id.Groups[1] != 3003 || id.Umask != 0o002 {
 		t.Fatal("user settings not applied", id)
 	}
+	if id, _ := resolve(t, map[string]string{"UMASK": "0277"}); id.Umask != -1 {
+		t.Fatal("umask that removes owner access accepted", id.Umask)
+	}
 	id, logs := resolve(t, map[string]string{"USER_ID": "abc", "UMASK": "999"})
 	if id.UID != 0 || id.Switch || id.Umask != -1 || !strings.Contains(logs, "item=USER_ID") || !strings.Contains(logs, "item=UMASK") {
 		t.Fatal("invalid values must fall back with a warning", id, logs)

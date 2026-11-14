@@ -119,7 +119,7 @@ func TestUnusableHeapIsIgnoredAndSavedHeapKept(t *testing.T) {
 			}
 		})
 	}
-	for _, heap := range []string{"1024M", "1G", "1048576K", "40g", "4096G"} {
+	for _, heap := range []string{"1024M", "1G", "1048576K", "40g", "4096G", "040G"} {
 		t.Run(heap, func(t *testing.T) {
 			root := t.TempDir()
 			os.Mkdir(filepath.Join(root, "conf"), 0700)
