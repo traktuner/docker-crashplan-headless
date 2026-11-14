@@ -37,10 +37,11 @@ test('synchronization is reported with progress like the desktop app', () => {
   assert.equal(s.kind, 'sync')
   assert.equal(s.title, 'Syncing backup index')
   assert.equal(s.progress?.value, 25)
-  assert.equal(s.progress?.text, '25%')
+  assert.match(s.progress!.text, /^25% · 25 of 100 index entries$/)
   const unknown = backupStatus({ engineReady: true, signedIn: true, progress: [dest({ validating: true, sync: { current: '60800000', total: '15161306', percent: -1, files: false } })] })
   assert.equal(unknown.progress?.value, undefined)
-  assert.doesNotMatch(unknown.progress!.text, /million|files|blocks|\d{4}/)
+  assert.match(unknown.progress!.text, /^60\.8 million index entries read$/)
+  assert.doesNotMatch(unknown.progress!.text, /files|blocks| of /)
   assert.equal(unknown.title, 'Syncing backup index')
 })
 
