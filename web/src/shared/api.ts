@@ -18,6 +18,7 @@ export class APIError extends Error {
 
 const messages: Record<string, string> = {
   WEB_AUTHORIZATION_REQUIRED: 'Sign in to the web interface.',
+  WEB_LOGIN_FAILED: 'Wrong username or password for the web interface.',
   NATIVE_AUTHORIZATION_REQUIRED: 'Sign in to CrashPlan to use this control.',
   NATIVE_OPERATION_INDETERMINATE:
     'The action may have started. Check its status before trying again.',

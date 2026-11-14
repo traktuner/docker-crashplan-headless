@@ -259,3 +259,14 @@ func TestEventStreamOutlivesReadTimeout(t *testing.T) {
 	case <-time.After(time.Second):
 	}
 }
+
+func TestWrongWebCredentialsSayWhatFailed(t *testing.T) {
+	server, _, logs := newFixture(t)
+	w := request(server.WebHandler(), "POST", "/api/v1/session", `{"username":"operat0r","password":"fixture-web-password-12345"}`, nil, "", "https://backup.fixture.invalid")
+	if w.Code != 401 || !strings.Contains(w.Body.String(), `"WEB_LOGIN_FAILED"`) || !strings.Contains(w.Body.String(), "Wrong username or password") {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if !strings.Contains(logs.String(), `"outcome":"WEB_LOGIN_FAILED"`) || strings.Contains(logs.String(), "fixture-web-password") {
+		t.Fatal("login failure log", logs.String())
+	}
+}

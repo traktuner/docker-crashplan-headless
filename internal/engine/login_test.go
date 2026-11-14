@@ -320,3 +320,45 @@ func TestRegistrationWithoutNativeKeyNeverFallsBackToLogin(t *testing.T) {
 		})
 	}
 }
+
+// The desktop app signs in through the browser for local accounts too; the
+// CrashPlan page then asks for password and verification code.
+func TestBrowserSignInAcceptsLocalAccounts(t *testing.T) {
+	for loginType, accepted := range map[string]bool{"local": true, "cloud_sso": true, "unknown": false} {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		initiated := false
+		c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/v1/LoginConfiguration":
+				io.WriteString(w, `{"loginType":"`+loginType+`"}`)
+			case "/v0/wsevent":
+				conn, err := websocket.Accept(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.CloseNow()
+				for {
+					if _, _, err := conn.Read(r.Context()); err != nil {
+						return
+					}
+				}
+			case "/v0/SsoAuthInitiateRequest":
+				initiated = true
+				io.WriteString(w, `{"errors":[],"ssoLoginUrls":[{"one":"CrashPlan","two":"https://login.fixture.invalid/login?uuid=x"}]}`)
+			default:
+				w.WriteHeader(404)
+			}
+		})
+		attempt, err := c.BeginSSO(ctx, LoginInfo{Username: "fixture-user", ServerAddress: "console.fixture.invalid"})
+		if accepted && (err != nil || !initiated || len(attempt.Providers) != 1) {
+			t.Fatal(loginType, err)
+		}
+		if !accepted && !errors.Is(err, ErrProtocol) {
+			t.Fatal(loginType, "accepted", err)
+		}
+		if attempt != nil {
+			attempt.Close()
+		}
+		cancel()
+	}
+}

@@ -114,7 +114,9 @@ func (c *Client) ssoContext(ctx context.Context, in LoginInfo) (LoginInfo, error
 	if in.Register && strings.TrimSpace(discovered.RegistrationKey) == "" {
 		return in, &LoginRejection{reason: "REGISTRATION_KEY_REQUIRED"}
 	}
-	if discovered.Type != "cloud_sso" {
+	// The desktop app signs in through the browser for every login type
+	// (local and cloud_sso); the CrashPlan page then asks for password and TOTP.
+	if discovered.Type != "cloud_sso" && discovered.Type != "local" {
 		return in, ErrRejected
 	}
 	in.RegistrationKey = discovered.RegistrationKey

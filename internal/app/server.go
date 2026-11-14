@@ -141,10 +141,18 @@ func (s *Server) handler(local bool) http.Handler {
 			}
 			peer, splitErr := auth.ClientIP(r, s.options.TrustedProxies)
 			if splitErr != nil {
+				outcome = "CLIENT_ADDRESS_REJECTED"
 				writeError(w, auth.ErrUnauthorized)
 				return
 			}
 			session, err := s.sessions.LoginFrom(r.Context(), peer, in.Username, in.Password)
+			if errors.Is(err, auth.ErrUnauthorized) {
+				// Say plainly that the entered credentials were wrong; this is the
+				// web password of the container, not the CrashPlan account.
+				outcome = "WEB_LOGIN_FAILED"
+				writeError(w, errWebLoginFailed)
+				return
+			}
 			if err != nil {
 				writeError(w, err)
 				return
@@ -426,7 +434,12 @@ func writeData(w http.ResponseWriter, status int, data any) {
 	}
 }
 
+var errWebLoginFailed = errors.New("WEB_LOGIN_FAILED")
+
 func errorCode(err error) string {
+	if errors.Is(err, errWebLoginFailed) {
+		return "WEB_LOGIN_FAILED"
+	}
 	var loginReason *engine.LoginRejection
 	if errors.As(err, &loginReason) {
 		switch loginReason.Reason() {
@@ -600,6 +613,9 @@ func writeError(w http.ResponseWriter, err error) {
 	case "RESTORE_NO_SPACE":
 		status = 422
 		message = "The restore destination does not have enough free space."
+	case "WEB_LOGIN_FAILED":
+		status = 401
+		message = "Wrong username or password for the web interface."
 	case "WEB_AUTHORIZATION_REQUIRED":
 		status = 401
 		message = "Sign in to the web interface."
