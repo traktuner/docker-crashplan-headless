@@ -1,8 +1,18 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../shared/api'
-import { ErrorNotice } from '../../shared/components'
+import {
+  ErrorNotice,
+  Field,
+  Notice,
+  Row,
+  Section,
+  Segmented,
+  Spinner,
+} from '../../shared/components'
+import './account.css'
 
+/** Only shown while CrashPlan keeps an unfinished device replacement. */
 export function ReplacementWorkflow() {
   const client = useQueryClient()
   const state = useQuery({
@@ -30,68 +40,89 @@ export function ReplacementWorkflow() {
       state.data.deviceSelectedGuid ||
       state.data.screenState)
   const required = action.toUpperCase() + ' REPLACEMENT'
+  if (!retained && !state.error && !complete.isSuccess && !complete.error)
+    return null
   return (
-    <section className="card form-card">
-      <h2>Device replacement workflow</h2>
-      <ErrorNotice error={state.error ?? complete.error} />
-      {state.isPending && <p role="status">Reading replacement state…</p>}
-      {state.data && !retained && (
-        <p className="muted">No unfinished replacement workflow.</p>
+    <Section
+      title="Unfinished device replacement"
+      description="CrashPlan saved a device replacement that was not completed. Finish or cancel it here."
+    >
+      {(state.error || complete.error) && (
+        <div className="row-block">
+          <ErrorNotice error={state.error ?? complete.error} />
+        </div>
+      )}
+      {complete.isSuccess && (
+        <div className="row-block">
+          <Notice tone="success">The saved replacement workflow is closed.</Notice>
+        </div>
       )}
       {retained && (
         <>
-          <p>
-            A saved replacement workflow is{' '}
-            {state.data?.inProgress ? 'in progress' : 'available'}.
-          </p>
+          <Row
+            title="Status"
+            value={state.data?.inProgress ? 'In progress' : 'Available'}
+          />
           {state.data?.deviceSelectedGuid && (
-            <p>
-              Selected device: <code>{state.data.deviceSelectedGuid}</code>
-            </p>
+            <Row
+              title="Selected device"
+              value={<code>{state.data.deviceSelectedGuid}</code>}
+            />
           )}
-          <p className="notice">
-            Closing this workflow does not reverse device identity changes or
-            stop backup and restore jobs.
-          </p>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault()
-              complete.mutate()
-            }}
-          >
-            <label>
-              Action
-              <select
+          <div className="row-block">
+            <Notice>
+              Closing this workflow does not reverse device identity changes or
+              stop backup and restore jobs.
+            </Notice>
+            <form
+              className="account-form"
+              noValidate
+              onSubmit={(event) => {
+                event.preventDefault()
+                if (complete.isPending || confirmation !== required) return
+                complete.mutate()
+              }}
+            >
+              <Segmented
+                label="Action"
                 value={action}
-                disabled={complete.isPending}
-                onChange={(event) => {
-                  setAction(event.target.value as 'finish' | 'cancel')
+                options={[
+                  { value: 'finish', label: 'Finish setup' },
+                  { value: 'cancel', label: 'Cancel setup' },
+                ]}
+                onChange={(value) => {
+                  if (complete.isPending) return
+                  setAction(value)
                   setConfirmation('')
                 }}
-              >
-                <option value="finish">Finish setup</option>
-                <option value="cancel">Cancel setup</option>
-              </select>
-            </label>
-            <label>
-              Type {required}
-              <input
-                required
-                autoComplete="off"
-                disabled={complete.isPending}
-                value={confirmation}
-                onChange={(event) => setConfirmation(event.target.value)}
               />
-            </label>
-            <button disabled={complete.isPending || confirmation !== required}>
-              Close replacement workflow
-            </button>
-          </form>
+              <Field label={<>To confirm, type <code>{required}</code></>}>
+                <input
+                  className="input"
+                  autoComplete="off"
+                  spellCheck={false}
+                  autoCapitalize="characters"
+                  disabled={complete.isPending}
+                  value={confirmation}
+                  onChange={(event) => setConfirmation(event.target.value)}
+                />
+              </Field>
+              <div className="button-row">
+                <button
+                  className={
+                    'btn ' +
+                    (action === 'cancel' ? 'btn-destructive' : 'btn-primary')
+                  }
+                  disabled={complete.isPending || confirmation !== required}
+                >
+                  {complete.isPending && <Spinner size={14} />}
+                  Close replacement workflow
+                </button>
+              </div>
+            </form>
+          </div>
         </>
       )}
-      {complete.isSuccess && (
-        <p role="status">The saved replacement workflow is closed.</p>
-      )}
-    </section>
+    </Section>
   )
 }

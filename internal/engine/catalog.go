@@ -51,6 +51,10 @@ type Device struct {
 	Self            bool   `json:"self"`
 	Blocked         bool   `json:"blocked"`
 	Deleted         bool   `json:"deleted"`
+	// Owned is another computer of the signed-in account (property OWN).
+	Owned bool `json:"owned"`
+	// Cloud is a CrashPlan cloud server (property CPC), never a restore source.
+	Cloud bool `json:"cloud"`
 }
 
 func (c *Client) Devices(ctx context.Context) ([]Device, error) {
@@ -60,6 +64,10 @@ func (c *Client) Devices(ctx context.Context) ([]Device, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseDevices(raw)
+}
+
+func parseDevices(raw []byte) ([]Device, error) {
 	var wire struct {
 		Computers *[]struct {
 			ID          json.Number                `json:"peerId"`
@@ -84,12 +92,15 @@ func (c *Client) Devices(ctx context.Context) ([]Device, error) {
 			return nil, ErrProtocol
 		}
 		seen[id] = true
-		self := string(item.Properties["ME"]) == `"true"` || string(item.Properties["ME"]) == `true`
+		flag := func(name string) bool {
+			return string(item.Properties[name]) == `"true"` || string(item.Properties[name]) == `true`
+		}
+		self := flag("ME")
 		archiveType := ""
 		if item.ArchiveType == "ARCHIVE_V1" || item.ArchiveType == "ARCHIVE_V3" {
 			archiveType = item.ArchiveType
 		}
-		devices = append(devices, Device{ArchiveType: archiveType, ID: id, Name: item.Name, Source: item.Source, Target: item.Target, AvailableTarget: item.Available, Self: self, Blocked: item.Blocked, Deleted: item.Deleted})
+		devices = append(devices, Device{ArchiveType: archiveType, ID: id, Name: item.Name, Source: item.Source, Target: item.Target, AvailableTarget: item.Available, Self: self, Blocked: item.Blocked, Deleted: item.Deleted, Owned: flag("OWN"), Cloud: flag("CPC")})
 	}
 	return devices, nil
 }

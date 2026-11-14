@@ -1,0 +1,117 @@
+/* Backup sets and destinations. Tokens only; shared parts live in style.css. */
+
+.set-block,
+.set-editor {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.set-editor > .segmented {
+  justify-self: start;
+}
+
+fieldset.bare {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.inline-error {
+  font-size: 12px;
+  color: var(--red);
+}
+.input[aria-invalid='true'] {
+  border-color: var(--red);
+}
+
+.input-group > .amount-input {
+  flex: 0 1 90px;
+  width: 90px;
+  min-width: 64px;
+}
+.row-control .input-group > .amount-input {
+  width: 90px;
+}
+.row-control .input-group > .select {
+  width: auto;
+}
+.time-range .input {
+  width: 120px;
+}
+
+.scan-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pattern-row .row-main {
+  gap: 4px;
+}
+
+/* Source browser */
+.breadcrumbs .crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.breadcrumbs button:disabled {
+  opacity: 0.6;
+}
+.source-list {
+  max-height: 440px;
+  overflow-y: auto;
+  border-top: 1px solid var(--separator);
+}
+.source-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 16px 16px minmax(0, 1fr) auto 14px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--separator);
+}
+.source-row input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.source-row .folder-icon {
+  color: var(--accent);
+}
+.source-row .file-icon {
+  color: var(--label-3);
+}
+.source-name {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--label);
+  text-align: left;
+  min-width: 0;
+}
+.source-name.folder {
+  cursor: pointer;
+}
+.source-name.folder:hover {
+  color: var(--accent);
+}
+.source-badges {
+  display: inline-flex;
+  gap: 6px;
+}
+
+@media (max-width: 720px) {
+  .time-range .input {
+    width: auto;
+    flex: 1 1 0;
+  }
+}

@@ -1,14 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
-  ArrowUpRight,
-  ChevronRight,
   FolderClosed,
   History,
   LayoutDashboard,
   LogOut,
   Menu,
-  Radio,
+  Activity as ActivityIcon,
   Search,
   Server,
   Settings2,
@@ -20,16 +18,18 @@ import { findPages, pages } from './navigation'
 import type { Page } from './navigation'
 import { ProjectNotice } from '../shared/ProjectNotice'
 import { ThemeSwitch } from '../shared/ThemeSwitch'
+
 const icons = {
   overview: LayoutDashboard,
   sets: FolderClosed,
   restore: History,
-  activity: Radio,
+  activity: ActivityIcon,
   settings: Settings2,
   security: ShieldCheck,
   account: UserRound,
   system: Server,
 }
+
 export function AppFrame({
   page,
   navigate,
@@ -44,17 +44,18 @@ export function AppFrame({
   children: ReactNode
 }) {
   // Pages that work before the CrashPlan account is signed in.
-  const locked = (id: Page) => signedIn === false && id !== 'account' && id !== 'system'
-  const [open, setOpen] = useState(false),
-    [search, setSearch] = useState('')
+  const locked = (id: Page) =>
+    signedIn === false && id !== 'account' && id !== 'system'
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
   const command = useRef<HTMLDialogElement>(null)
-  const sidebar = useRef<HTMLElement>(null),
-    menu = useRef<HTMLButtonElement>(null)
+  const sidebar = useRef<HTMLElement>(null)
+  const menu = useRef<HTMLButtonElement>(null)
   const [mobile, setMobile] = useState(
-    () => matchMedia('(max-width: 640px)').matches,
+    () => matchMedia('(max-width: 720px)').matches,
   )
   useEffect(() => {
-    const media = matchMedia('(max-width: 640px)')
+    const media = matchMedia('(max-width: 720px)')
     const change = () => setMobile(media.matches)
     media.addEventListener('change', change)
     return () => media.removeEventListener('change', change)
@@ -69,23 +70,6 @@ export function AppFrame({
         event.preventDefault()
         setOpen(false)
         requestAnimationFrame(() => menu.current?.focus())
-      }
-      if (event.key === 'Tab') {
-        const items = [
-          ...(sidebar.current?.querySelectorAll<HTMLElement>(
-            'button:not(:disabled),a[href]',
-          ) ?? []),
-        ].filter((item) => item.getClientRects().length)
-        const first = items[0],
-          last = items.at(-1)
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault()
-          last?.focus()
-        }
-        if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault()
-          first?.focus()
-        }
       }
     }
     window.addEventListener('keydown', keys)
@@ -117,14 +101,11 @@ export function AppFrame({
       <a className="skip-link" href="#main-content">
         Skip to content
       </a>
-      {open && (
+      {open && mobile && (
         <button
           className="nav-scrim"
           aria-label="Close navigation"
-          onClick={() => {
-            setOpen(false)
-            requestAnimationFrame(() => menu.current?.focus())
-          }}
+          onClick={() => setOpen(false)}
         />
       )}
       <aside
@@ -133,41 +114,35 @@ export function AppFrame({
         role={mobile && open ? 'dialog' : undefined}
         aria-modal={mobile && open ? true : undefined}
         className={open ? 'sidebar is-open' : 'sidebar'}
-        aria-label="Application sidebar"
+        aria-label="Navigation"
       >
-        <a
-          className="brand"
-          href="#overview"
-          onClick={(e) => {
-            e.preventDefault()
-            go('overview')
-          }}
-        >
-          <span className="brand-symbol">
-            <ShieldCheck size={24} strokeWidth={1.8} />
-          </span>
-          <span>
-            CrashPlan<small>HEADLESS</small>
-          </span>
-        </a>
-        <button
-          className="icon-button close-navigation"
-          aria-label="Close navigation"
-          onClick={() => {
-            setOpen(false)
-            requestAnimationFrame(() => menu.current?.focus())
-          }}
-        >
-          <X size={20} />
-        </button>
-        <div className="workspace-switch">
-          <span className="workspace-avatar">CP</span>
-          <div>
-            <strong>Backup service</strong>
-            <span>Management console</span>
-          </div>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <a
+            className="brand"
+            href="#overview"
+            onClick={(e) => {
+              e.preventDefault()
+              go('overview')
+            }}
+          >
+            <span className="brand-mark">
+              <ShieldCheck size={18} strokeWidth={2} />
+            </span>
+            <span>
+              CrashPlan
+              <small>Headless</small>
+            </span>
+          </a>
+          <button
+            className="icon-btn mobile-only"
+            style={{ marginLeft: 'auto' }}
+            aria-label="Close navigation"
+            onClick={() => setOpen(false)}
+          >
+            <X size={18} />
+          </button>
         </div>
-        <nav aria-label="Main navigation">
+        <nav aria-label="Main">
           {(['Backup', 'Configuration'] as const).map((group) => (
             <div className="nav-group" key={group}>
               <p className="nav-label">{group}</p>
@@ -178,15 +153,14 @@ export function AppFrame({
                   return (
                     <button
                       key={item.id}
-                      className={page === item.id ? 'active' : ''}
+                      className="nav-item"
                       aria-current={page === item.id ? 'page' : undefined}
                       disabled={locked(item.id)}
                       aria-describedby={locked(item.id) ? 'nav-locked-hint' : undefined}
                       onClick={() => go(item.id)}
                     >
-                      <Icon size={18} strokeWidth={1.8} />
+                      <Icon size={16} strokeWidth={2} />
                       {item.label}
-                      {page === item.id && <span className="nav-active-dot" />}
                     </button>
                   )
                 })}
@@ -194,72 +168,50 @@ export function AppFrame({
           ))}
         </nav>
         {signedIn === false && (
-          <p className="nav-locked-hint" id="nav-locked-hint">
+          <p className="nav-hint" id="nav-locked-hint">
             Sign in to CrashPlan to open the other pages.
           </p>
         )}
         <div className="sidebar-bottom">
-          <div className="sidebar-theme">
-            <ThemeSwitch />
-          </div>
           {signedIn !== undefined && (
-            <button
-              className={'account-state ' + (signedIn ? 'is-signed-in' : 'is-signed-out')}
-              onClick={() => go('account')}
-            >
-              <span aria-hidden="true" />
-              {signedIn ? 'CrashPlan signed in' : 'CrashPlan not signed in'}
+            <button className="account-chip" onClick={() => go('account')}>
+              <span className={'dot ' + (signedIn ? 'green' : 'orange')} />
+              {signedIn ? 'Signed in to CrashPlan' : 'Not signed in to CrashPlan'}
             </button>
           )}
           <button
-            className="signout-button"
+            className="account-chip"
             onClick={logout}
             title="Ends this browser session. CrashPlan and backups keep running."
           >
-            <LogOut size={17} />
-            Leave web interface
+            <LogOut size={15} />
+            Sign out of web interface
           </button>
         </div>
       </aside>
       <div className="app-body" inert={mobile && open}>
         <header className="topbar">
-          <div className="topbar-location">
-            <button
-              ref={menu}
-              className="icon-button mobile-menu"
-              aria-label="Open navigation"
-              aria-expanded={open}
-              onClick={() => setOpen(!open)}
-            >
-              <Menu size={21} />
-            </button>
-            <span>CrashPlan</span>
-            <ChevronRight size={14} />
-            <strong>{current.label}</strong>
-          </div>
+          <button
+            ref={menu}
+            className="icon-btn mobile-only"
+            aria-label="Open navigation"
+            aria-expanded={open}
+            onClick={() => setOpen(!open)}
+          >
+            <Menu size={19} />
+          </button>
+          <span className="topbar-title">{current.label}</span>
           <div className="topbar-actions">
-            <div className="topbar-theme">
-              <ThemeSwitch />
-            </div>
             <button
-              className="navigation-search"
-              aria-label="Find a page"
+              className="search-trigger desktop-only"
+              aria-label="Go to page"
               onClick={() => command.current?.showModal()}
             >
-              <Search size={16} />
-              <span>Find a page</span>
-              <kbd>⌘ K</kbd>
+              <Search size={14} />
+              Go to page
+              <kbd>⌘K</kbd>
             </button>
-            {page !== 'restore' && signedIn !== false && (
-              <button
-                className="topbar-restore secondary"
-                onClick={() => go('restore')}
-              >
-                <History size={16} />
-                Restore files
-                <ArrowUpRight size={14} />
-              </button>
-            )}
+            <ThemeSwitch />
           </div>
         </header>
         <main className="workspace" id="main-content" tabIndex={-1}>
@@ -267,38 +219,42 @@ export function AppFrame({
         </main>
         <ProjectNotice />
       </div>
-      <dialog className="command-dialog" ref={command}>
-        <div className="command-search">
-          <Search size={20} />
+      <dialog
+        className="dialog"
+        ref={command}
+        aria-label="Go to page"
+        onClick={(e) => {
+          if (e.target === command.current) command.current?.close()
+        }}
+      >
+        <div className="command-input">
+          <Search size={18} />
           <input
-            aria-label="Find a page"
-            placeholder="Search pages"
+            aria-label="Page name"
+            placeholder="Go to page"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             autoFocus
           />
-          <button
-            className="key-button"
-            onClick={() => command.current?.close()}
-          >
-            Esc
-          </button>
         </div>
-        <p className="command-caption">QUICK NAVIGATION</p>
         <div className="command-results">
           {findPages(search).map((item) => {
             const Icon = icons[item.id]
             return (
-              <button key={item.id} disabled={locked(item.id)} onClick={() => go(item.id)}>
-                <Icon size={18} />
-                <span>{item.label}</span>
-                <ChevronRight size={16} />
+              <button
+                key={item.id}
+                className="nav-item"
+                disabled={locked(item.id)}
+                onClick={() => go(item.id)}
+              >
+                <Icon size={16} />
+                {item.label}
               </button>
             )
           })}
           {findPages(search).length === 0 && (
-            <p className="empty-copy">
-              No pages match. Try “files”, “restore” or “settings”.
+            <p className="row-detail" style={{ padding: 12 }}>
+              No page matches.
             </p>
           )}
         </div>

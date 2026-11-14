@@ -156,17 +156,21 @@ export function App() {
   }
   if (engineChanged)
     return (
-      <main className="login">
-        <section className="card" role="alert">
+      <main className="login-page">
+        <section className="login-card" role="alert">
           <h1>CrashPlan session changed</h1>
-          <p>Reload the interface to review the current account. Unsaved forms will be cleared.</p>
-          <button onClick={() => window.location.reload()}>Reload interface</button>
+          <p className="muted">
+            Reload to see the current account. Unsaved changes are discarded.
+          </p>
+          <button className="btn btn-primary" onClick={() => window.location.reload()}>
+            Reload
+          </button>
         </section>
       </main>
     )
   if (!ready)
     return (
-      <main className="login">
+      <main className="login-page">
         <Loading />
       </main>
     )
@@ -196,9 +200,9 @@ export function App() {
         {checking ? (
           <Loading />
         ) : shown === 'overview' ? (
-          <Overview navigate={navigate} />
+          <Overview navigate={navigate} signedIn={signedIn} />
         ) : shown === 'activity' ? (
-          <BackupActivity />
+          <BackupActivity signedIn={signedIn} />
         ) : shown === 'sets' ? (
           <BackupSets />
         ) : shown === 'restore' ? (

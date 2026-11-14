@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { ShieldCheck, ArrowRight } from 'lucide-react'
+import { ShieldCheck } from 'lucide-react'
 import { api } from '../../shared/api'
 import type { Session } from '../../shared/api'
-import { ErrorNotice } from '../../shared/components'
+import { ErrorNotice, Field } from '../../shared/components'
 import { ProjectNotice } from '../../shared/ProjectNotice'
 import { ThemeSwitch } from '../../shared/ThemeSwitch'
 
@@ -20,52 +20,57 @@ export function WebLogin({
     onSettled: () => setPassword(''),
   })
   return (
-    <main className="login">
+    <main className="login-page">
       <div className="login-theme">
         <ThemeSwitch />
       </div>
-      <div className="brand-mark">
-        <ShieldCheck size={30} />
+      <div className="login-card">
+        <span className="brand-mark">
+          <ShieldCheck size={28} />
+        </span>
+        <div>
+          <h1>CrashPlan</h1>
+          <p className="muted" style={{ marginTop: 6 }}>
+            Sign in to the web interface of this container. This is not your
+            CrashPlan account.
+          </p>
+        </div>
+        <form
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault()
+            login.mutate()
+          }}
+        >
+          <Field label="User name">
+            <input
+              className="input"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
+            />
+          </Field>
+          <Field label="Password">
+            <input
+              className="input"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+            />
+          </Field>
+          <ErrorNotice error={login.error} />
+          <button
+            className="btn btn-primary btn-lg btn-block"
+            disabled={login.isPending || !username || !password}
+          >
+            {login.isPending ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>
+        <ProjectNotice />
       </div>
-      <p className="eyebrow">CRASHPLAN</p>
-      <h1>Web interface</h1>
-      <p className="muted">
-        Enter the web interface password of this container. This is not your
-        CrashPlan account password; the account sign-in follows if needed.
-      </p>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault()
-          login.mutate()
-        }}
-      >
-        <label>
-          Username
-          <input
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            autoComplete="username"
-            autoCapitalize="none"
-            spellCheck={false}
-            required
-          />
-        </label>
-        <label>
-          Password
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-            required
-          />
-        </label>
-        <ErrorNotice error={login.error} />
-        <button disabled={login.isPending || !password}>
-          Sign in <ArrowRight size={16} />
-        </button>
-      </form>
-      <ProjectNotice />
     </main>
   )
 }
