@@ -4,6 +4,7 @@ package sources
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -28,7 +29,26 @@ const (
 	SentinelMissing    Reason = "SOURCE_SENTINEL_MISSING"
 	IdentityChanged    Reason = "SOURCE_IDENTITY_CHANGED"
 	SourceEmpty        Reason = "SOURCE_EMPTY"
+	SourceChanged      Reason = "SOURCE_CHANGED"
 )
+
+// IdentityRecord is the state record that remembers what each source was.
+const IdentityRecord = "source-identities.json"
+
+// PinStore keeps the remembered source identities across restarts.
+type PinStore interface {
+	Read(name string) ([]byte, error)
+	Write(name string, raw []byte) error
+}
+
+// pin is what must stay the same for a source between starts: the filesystem
+// type and the path inside that filesystem. A host share that is not mounted
+// leaves its parent filesystem behind, which differs in one of the two.
+// Device numbers are left out because they change across reboots.
+type pin struct {
+	FS   string `json:"filesystem"`
+	Root string `json:"root"`
+}
 
 // DefaultBase is where sources are discovered when CPH_SOURCE_ROOTS is unset.
 const DefaultBase = "/storage"
@@ -44,6 +64,57 @@ type Gate struct {
 	sentinel string
 	policy   string
 	bound    []identity
+	pins     PinStore
+	changed  string
+}
+
+// UsePins remembers each source's identity in store and refuses a later
+// start in which a source comes from a different filesystem or path.
+func (g *Gate) UsePins(store PinStore) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pins = store
+}
+
+// checkPins compares the current mounts with the remembered ones and records
+// sources seen for the first time. A record that cannot be read or written
+// does not stop the engine; it only disables this extra check.
+func (g *Gate) checkPins(identities []identity) error {
+	if g.pins == nil {
+		return nil
+	}
+	known := map[string]pin{}
+	if raw, err := g.pins.Read(IdentityRecord); err == nil {
+		if json.Unmarshal(raw, &known) != nil {
+			known = map[string]pin{}
+		}
+	}
+	changed := false
+	for i, root := range g.roots {
+		current := pin{FS: identities[i].Mount.FS, Root: identities[i].Mount.Root}
+		if saved, ok := known[root]; ok {
+			if saved != current {
+				g.changed = root
+				return SourceChanged
+			}
+			continue
+		}
+		known[root] = current
+		changed = true
+	}
+	if changed {
+		if raw, err := json.Marshal(known); err == nil {
+			_ = g.pins.Write(IdentityRecord, raw)
+		}
+	}
+	return nil
+}
+
+// Changed names the source whose identity differs from the remembered one.
+func (g *Gate) Changed() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.changed
 }
 
 func New(roots []string, sentinel string, policies ...string) (*Gate, error) {
@@ -173,25 +244,45 @@ func ConfigMountIn(raw []byte, path string) (string, error) {
 // Without such a mount it returns base itself, which the gate then reports as
 // not mounted until a volume appears there.
 func DetectRoots(raw []byte, base string) []string {
+	roots, _ := DetectRootsReport(raw, base)
+	return roots
+}
+
+// DetectRootsReport also returns the mounts below base that are not used:
+// pseudo filesystems and mounts beyond the 128-source limit.
+func DetectRootsReport(raw []byte, base string) ([]string, []string) {
+	var skipped []string
 	var found []string
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
 	scanner.Buffer(make([]byte, 4096), 1<<20)
 	for scanner.Scan() {
 		fields := strings.Split(scanner.Text(), " ")
 		separator := slices.Index(fields, "-")
-		if len(fields) < 10 || separator < 6 || len(fields) < separator+4 || pseudoFilesystems[fields[separator+1]] {
+		if len(fields) < 10 || separator < 6 || len(fields) < separator+4 {
 			continue
 		}
 		point := unescape(fields[4])
+		if pseudoFilesystems[fields[separator+1]] {
+			if point == base || strings.HasPrefix(point, base+"/") {
+				skipped = append(skipped, point)
+			}
+			continue
+		}
 		if (point == base || strings.HasPrefix(point, base+"/")) && !slices.Contains(found, point) && !strings.ContainsAny(point, "\x00\r\n") {
 			found = append(found, point)
 		}
 	}
 	slices.Sort(found)
-	if len(found) == 0 || len(found) > 128 {
-		return []string{base}
+	if len(found) == 0 {
+		return []string{base}, skipped
 	}
-	return found
+	if len(found) > 128 {
+		// The outermost mounts come first in sorted order of their parents;
+		// keep the limit and report the rest instead of dropping every check.
+		skipped = append(skipped, found[128:]...)
+		found = found[:128]
+	}
+	return found, skipped
 }
 
 // MountedLocal verifies a local mountpoint without opening its filesystem.
@@ -270,6 +361,9 @@ func (g *Gate) Check() error {
 		if err != nil || m != identities[i].Mount {
 			return ErrNotReady
 		}
+	}
+	if err := g.checkPins(identities); err != nil {
+		return err
 	}
 	if g.bound == nil {
 		g.bound = identities

@@ -20,6 +20,7 @@ The container then gives `/config` to that user and drops root rights before any
 A container started directly as a non-root user (`--user`, Compose `user:`) keeps that user; `/config` must be writable by it.
 
 Files in `/config` that belong to another user are taken over at every start when the container starts as root.
+Volumes mounted below `/config` are left alone, and nothing changes while another engine holds the volume.
 This makes a configuration from another image usable, for example one that ran as UID 1000.
 Entries that cannot be changed, for example on a share that maps root to another user, are reported as `configuration_ownership_incomplete`.
 Group and other write access is removed from `/config/var`, where the restore helper keeps private pipes.
@@ -34,9 +35,10 @@ Native sign-in can still be required when saved automatic login is ineligible.
 Mount your data at `/storage`, or several folders below it.
 Without `CPH_SOURCE_ROOTS`, every mount at or below `/storage` is a source; the log entry `sources_detected` lists them.
 The examples mount sources read-only.
-The daemon checks every source before starting the engine or a manual scan: it must be mounted, and a subfolder bind must not be empty.
-With `CPH_SOURCE_SENTINEL`, a marker file must exist in each source instead.
-A missing source makes the engine wait, so a share that is not mounted is never seen as deleted data.
+The daemon checks every source before starting the engine or a manual scan: it must be mounted, a subfolder bind must not be empty
+(or must contain the marker file named by `CPH_SOURCE_SENTINEL`), and it must come from the same filesystem and path as at its first start.
+If a check fails, the engine waits and the log entry `source_not_ready` names the reason.
+See [Sources](environment.md#sources) for what these checks cannot detect; use a marker file for network shares.
 The daemon does not create host directories or mount network shares.
 
 `CPH_SOURCE_POLICY=any` (default) accepts every real filesystem, including NFS, SMB and FUSE filesystems such as mergerfs.

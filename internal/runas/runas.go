@@ -83,7 +83,7 @@ func Resolve(get func(string) string, logger *slog.Logger) Identity {
 }
 
 // names returns the account name and the home the engine uses. A user without
-// an account in the image is named "crashplan"; its home is /config, which
+// an account in the image is named by its number; its home is /config, which
 // holds the same .crashplan directory that root reaches through /root.
 func names(uid int) (string, string) {
 	if uid == 0 {
@@ -92,7 +92,9 @@ func names(uid int) (string, string) {
 	if u, err := user.LookupId(strconv.Itoa(uid)); err == nil && u.Username != "" {
 		return u.Username, "/config"
 	}
-	return "crashplan", "/config"
+	// Java names a user without an account by its number. The engine reports
+	// that name for restore jobs, so the daemon must use the same one.
+	return strconv.Itoa(uid), "/config"
 }
 
 // TakeOwnership gives every entry below root to uid:gid. Entries that cannot
@@ -100,6 +102,12 @@ func names(uid int) (string, string) {
 // counted and reported once; the engine then decides whether it can use them.
 func TakeOwnership(root string, uid, gid int, logger *slog.Logger) {
 	changed, failed := 0, 0
+	var rootDevice uint64
+	if info, err := os.Lstat(root); err == nil {
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+			rootDevice = uint64(stat.Dev)
+		}
+	}
 	filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			failed++
@@ -111,7 +119,17 @@ func TakeOwnership(root string, uid, gid int, logger *slog.Logger) {
 			return nil
 		}
 		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || (int(stat.Uid) == uid && int(stat.Gid) == gid) {
+		if !ok {
+			return nil
+		}
+		// A volume mounted below /config is someone else's; leave it alone.
+		if uint64(stat.Dev) != rootDevice {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if int(stat.Uid) == uid && int(stat.Gid) == gid {
 			return nil
 		}
 		if os.Lchown(path, uid, gid) != nil {
@@ -127,6 +145,20 @@ func TakeOwnership(root string, uid, gid int, logger *slog.Logger) {
 	if failed > 0 {
 		logger.Warn("configuration_ownership_incomplete", "entries", failed, "uid", uid, "gid", gid)
 	}
+}
+
+// Busy reports whether an engine holds the lock file at path.
+func Busy(path string) bool {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return false
+	}
+	defer syscall.Close(fd)
+	if syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+		return true
+	}
+	syscall.Flock(fd, syscall.LOCK_UN)
+	return false
 }
 
 // PrepareDir creates a directory for the target user before privileges drop.

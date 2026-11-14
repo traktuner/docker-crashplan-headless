@@ -24,7 +24,7 @@ Other values that cannot be parsed stop the start with `INVALID_CONFIGURATION`, 
 | --- | --- | --- | --- |
 | `CPH_MODE` | no | `headless` | `headless`: CLI only, no open port. `web`: also serve the web interface. |
 | `TZ` | no | `UTC` | Time zone for schedules and logs, for example `Europe/Vienna`. |
-| `CRASHPLAN_SRV_MAX_MEM` | no | saved value, else `1024M` | Maximum Java heap, for example `8G` or `8192M`. Values below 1024M are raised to 1024M. Empty keeps the saved value. |
+| `CRASHPLAN_SRV_MAX_MEM` | no | saved value, else `1024M` | Maximum Java heap, for example `8G` or `8192M`, from 1024M to 4T. Other values are ignored with a warning and the saved value is kept. Empty keeps the saved value. |
 | `CPH_LOG_LEVEL` | no | `INFO` | `DEBUG`, `INFO`, `WARN` or `ERROR`. |
 | `CPH_LOG_FORMAT` | no | `json` | `json` or `text` on container stdout. |
 | `LANG`, `LC_ALL` | no | `C.UTF-8` | Keep a UTF-8 locale; file names depend on it. |
@@ -33,7 +33,7 @@ Other values that cannot be parsed stop the start with `INVALID_CONFIGURATION`, 
 
 | Variable | Required | Default | Meaning |
 | --- | --- | --- | --- |
-| `USER_ID` | no | `0` (root) | User the engine runs as. |
+| `USER_ID` | no | `0` (root) | User the engine runs as. A user without an account in the image is named by its number. |
 | `GROUP_ID` | no | value of `USER_ID` | Group the engine runs as. |
 | `SUP_GROUP_IDS` | no | none | Comma-separated extra group IDs, for example to read group-owned data. |
 | `UMASK` | no | `0022` | Octal mask for new files, for example in restores. |
@@ -51,10 +51,15 @@ With the default (root), files in `/config` that belong to another user, for exa
 | `CPH_SOURCE_POLICY` | no | `any` | Allowed filesystems: `any` (every real filesystem, including NFS, SMB and FUSE), `mounted` (local filesystems, NFS, SMB), `local` (ZFS, ext4, XFS, Btrfs only). |
 | `CPH_SOURCE_SENTINEL` | no | none | Name of a marker file that must exist in every source, for example `.cph-source-ready`. |
 
-Before the engine starts, and before every manual scan, the container checks that each source is really mounted.
-If a share is missing, the engine waits instead of seeing an empty folder and marking every file as deleted.
-A source that is a subfolder of a filesystem must not be empty; with `CPH_SOURCE_SENTINEL`, it must contain the marker file instead.
-Mount a source again or add one later: restart the container.
+Before the engine starts, and before every manual scan, the container checks each source. The engine waits while:
+
+- a source is not a mount, or is on a pseudo filesystem such as tmpfs or overlay;
+- a source that is a subfolder of a filesystem is empty (without `CPH_SOURCE_SENTINEL`), or lacks the marker file (with it);
+- a source comes from a different filesystem or path than at its first start. This catches a host share that is not mounted, because the bind then shows the parent filesystem. The identities are kept in `/config/cph/source-identities.json`; delete that file while the container is stopped if you move a source on purpose.
+
+These checks cannot see everything. A network share whose server exports an empty folder, or a share mounted below another source that is missing at start, can still look valid.
+For network shares, set `CPH_SOURCE_SENTINEL` and create the marker file in every source; this is the strongest protection.
+Sources are detected at start: to add one, mount it and restart the container. Without any mount at or below `/storage`, the engine waits; the daemon and `cphctl` still run.
 
 ## Web interface
 

@@ -100,7 +100,7 @@ func TestInitRefusesCredentialSymlinksAndPreservesOutsideFiles(t *testing.T) {
 }
 
 func TestUnusableHeapIsIgnoredAndSavedHeapKept(t *testing.T) {
-	for _, heap := range []string{"8192", "40GB", "-1G", "lots"} {
+	for _, heap := range []string{"8192", "40GB", "-1G", "lots", "512M", "999999999G"} {
 		t.Run(heap, func(t *testing.T) {
 			root := t.TempDir()
 			os.Mkdir(filepath.Join(root, "conf"), 0700)
@@ -119,7 +119,7 @@ func TestUnusableHeapIsIgnoredAndSavedHeapKept(t *testing.T) {
 			}
 		})
 	}
-	for _, heap := range []string{"512M", "1024M", "1G", "1048576K", "40g"} {
+	for _, heap := range []string{"1024M", "1G", "1048576K", "40g", "4096G"} {
 		t.Run(heap, func(t *testing.T) {
 			root := t.TempDir()
 			os.Mkdir(filepath.Join(root, "conf"), 0700)

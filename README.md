@@ -21,7 +21,7 @@ docker exec crashplan cphctl status
 No setting is required. Without any environment variables the container:
 
 - runs headless (private control socket, no open port),
-- backs up whatever is mounted at or below `/storage`,
+- backs up whatever is mounted at or below `/storage` (the engine waits until something is mounted there),
 - uses the heap saved in `/config`, or 1024 MiB on a new installation,
 - runs the engine as root, or as `USER_ID`/`GROUP_ID` when you set them.
 
@@ -37,7 +37,7 @@ See [Configuration](docs/environment.md) for every option, and which ones are re
 | Memory | Heap only grows, little is returned | Idle GC, native-heap trimming and fewer malloc arenas return memory to the host |
 | JVM options | Only `-Xmx` | GC choice and memory tuning through environment variables |
 | File watching | inotify watch on every directory | Off by default; regular scans find changes. Saves memory and kernel resources on large data sets |
-| Source safety | Engine starts even if a mount is missing | Waits until every source is mounted and not empty, so an absent share is never seen as "all files deleted" |
+| Source safety | Engine starts even if a mount is missing | Waits while a source is not mounted, empty, or comes from a different filesystem than last time; an optional marker file gives the strongest check |
 | Self-updates | Engine updates itself | Blocked; new versions come as tested image releases |
 | Restore | Desktop dialog | CLI and web: browse, search, versions, restore to declared folders or the original location |
 | Logs | Engine logs only | Structured JSON or text logs on stdout; engine logs stay private under `/config/log` |

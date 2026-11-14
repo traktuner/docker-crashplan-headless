@@ -83,10 +83,21 @@ func run() error {
 	slog.SetDefault(logger)
 	if cfg.SourceRootsDetected {
 		logger.Info("sources_detected", "roots", cfg.SourceRoots)
+		if len(cfg.SourceRootsSkipped) > 0 {
+			logger.Warn("sources_skipped", "mounts", cfg.SourceRootsSkipped, "hint", "pseudo filesystems and mounts beyond 128 are not checked; set CPH_SOURCE_ROOTS to choose")
+		}
+		if len(cfg.SourceRoots) == 1 && cfg.SourceRoots[0] == sources.DefaultBase {
+			logger.Info("sources_waiting_for_storage", "hint", "the engine starts when a volume is mounted at /storage or below it")
+		}
 	}
 	identity := runas.Resolve(os.Getenv, logger)
 	configRoot := filepath.Dir(cfg.StateDir)
 	if identity.Switch || os.Geteuid() == 0 {
+		// Never change files of an engine that is still running on this volume.
+		if runas.Busy(filepath.Join(cfg.StateDir, "engine.lock")) {
+			logger.Error("configuration_in_use", "hint", "another container runs an engine on this /config")
+			return statefile.ErrState
+		}
 		// Files left by an image that ran as another user become usable.
 		runas.TakeOwnership(configRoot, identity.UID, identity.GID, logger)
 		if err := runas.PrepareDir(filepath.Dir(cfg.Socket), identity); err != nil {
@@ -146,6 +157,10 @@ func run() error {
 	gate, err := sources.New(cfg.SourceRoots, cfg.SourceSentinel, cfg.SourcePolicy)
 	if err != nil {
 		return config.ErrConfiguration
+	}
+	gate.UsePins(store)
+	if cfg.SourceSentinel == "" {
+		logger.Info("source_marker_not_set", "hint", "set CPH_SOURCE_SENTINEL and create that file in every source for the strongest protection against unmounted shares")
 	}
 	console, err := logx.OpenConsole(filepath.Join(filepath.Dir(cfg.StateDir), "log/cph-console"), 10<<20, 3)
 	if err != nil {

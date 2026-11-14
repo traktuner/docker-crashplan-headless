@@ -39,6 +39,7 @@ type Config struct {
 	SourceSentinel, SourcePolicy, LogFormat                                           string
 	LogLevel                                                                          slog.Level
 	SourceRootsDetected                                                               bool
+	SourceRootsSkipped                                                                []string
 	StopGrace                                                                         time.Duration
 	TrustedProxies                                                                    []netip.Prefix
 }
@@ -97,7 +98,7 @@ func Load(get func(string) string) (Config, error) {
 	} else {
 		// Without an explicit list, every volume mounted under /storage is a source.
 		raw, _ := readMountInfo()
-		c.SourceRoots = sources.DetectRoots(raw, sources.DefaultBase)
+		c.SourceRoots, c.SourceRootsSkipped = sources.DetectRootsReport(raw, sources.DefaultBase)
 		c.SourceRootsDetected = true
 	}
 	if _, err := sources.New(c.SourceRoots, c.SourceSentinel, c.SourcePolicy); err != nil {

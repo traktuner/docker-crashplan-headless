@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -54,5 +55,48 @@ func TestApplyWithoutSwitchKeepsUser(t *testing.T) {
 	id := Identity{UID: os.Geteuid(), GID: os.Getegid(), Umask: -1}
 	if err := Apply(id); err != nil || os.Geteuid() != id.UID {
 		t.Fatal(err)
+	}
+}
+
+func TestUserWithoutAccountIsNamedByNumber(t *testing.T) {
+	name, home := names(4242)
+	if name != "4242" || home != "/config" {
+		t.Fatal(name, home)
+	}
+	if name, home := names(0); name != "root" || home != "/root" {
+		t.Fatal(name, home)
+	}
+}
+
+func TestBusyDetectsAHeldLock(t *testing.T) {
+	path := t.TempDir() + "/engine.lock"
+	if Busy(path) {
+		t.Fatal("absent lock reported busy")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if Busy(path) {
+		t.Fatal("free lock reported busy")
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	if !Busy(path) {
+		t.Fatal("held lock not detected")
+	}
+}
+
+func TestTakeOwnershipLeavesOwnedTreeUnchanged(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(root+"/a/b", 0700)
+	os.WriteFile(root+"/a/b/f", nil, 0600)
+	os.Symlink("/etc/passwd", root+"/a/link")
+	var logs bytes.Buffer
+	TakeOwnership(root, os.Geteuid(), os.Getegid(), slog.New(slog.NewTextHandler(&logs, nil)))
+	if logs.Len() != 0 {
+		t.Fatal("owned tree reported changes", logs.String())
 	}
 }

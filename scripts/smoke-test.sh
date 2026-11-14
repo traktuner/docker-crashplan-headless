@@ -184,8 +184,9 @@ try:
   started=wait(name,lambda x:x['status']=='running' and x['native']['nativeReady'] and x['native']['eventsReady'])
   assert engine_user(name,started['pid'])=='1000:1000','engine does not run as USER_ID'
   assert owner(name,'/config/machine-id')=='1000:1000' and owner(name,'/config/cph')=='1000:1000','configuration not prepared for USER_ID'
-  daemon=docker('exec',name,'stat','-c','%u','/proc/1').stdout.strip()
-  record('user-id-switch',engineUser='1000:1000',configOwner='1000:1000',initUser=daemon)
+  daemon=docker('exec',name,'sh','-c','stat -c %u /proc/$(pgrep -x cphd)').stdout.strip()
+  assert daemon=='1000','daemon kept root after the switch'
+  record('user-id-switch',engineUser='1000:1000',configOwner='1000:1000',daemonUser=daemon)
   stop(name)
   # A container started directly as a non-root user keeps that user.
   name='cph-smoke-'+nonce+'-container-user'

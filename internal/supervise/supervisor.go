@@ -119,7 +119,12 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		for sourceErr := s.options.Sources.Check(); sourceErr != nil; sourceErr = s.options.Sources.Check() {
 			reason := sourceReason(sourceErr)
 			if reason != lastSourceReason {
-				s.options.Logger.Warn("source_not_ready", "reason", reason)
+				if changed, ok := s.options.Sources.(interface{ Changed() string }); ok && reason == "SOURCE_CHANGED" {
+					s.options.Logger.Warn("source_not_ready", "reason", reason, "source", changed.Changed(),
+						"hint", "the source now comes from another filesystem or path; mount the original data, or remove /config/cph/source-identities.json while stopped if the change is intended")
+				} else {
+					s.options.Logger.Warn("source_not_ready", "reason", reason)
+				}
 				lastSourceReason = reason
 			}
 			s.update("waiting_source", 0, nil)

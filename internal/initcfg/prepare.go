@@ -24,8 +24,11 @@ var ErrInit = errors.New("CONFIG_INITIALIZATION_FAILED")
 var versionPattern = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+){1,3}(?:[-a-zA-Z0-9.]+)?$`)
 var heapPattern = regexp.MustCompile(`^[1-9][0-9]{0,8}[gGmMkK]$`)
 
-// The launcher raises a smaller heap to this value.
-const minimumHeapMiB = 1024
+// The launcher uses heaps from 1024 MiB to 4 TiB and ignores other values.
+const (
+	minimumHeapMiB = 1024
+	maximumHeapMiB = 4 << 20
+)
 
 var hostPattern = regexp.MustCompile(`<serviceHost>[^<]*</serviceHost>`)
 
@@ -67,8 +70,11 @@ func Prepare(options Options) error {
 		if !heapPattern.MatchString(options.Heap) {
 			options.Logger.Warn("heap_setting_ignored", "item", "CRASHPLAN_SRV_MAX_MEM", "reason", "invalid_format", "expected", "e.g. 4096M or 40G")
 			options.Heap = ""
-		} else if heapMiB(options.Heap) < minimumHeapMiB {
-			options.Logger.Warn("heap_setting_raised", "item", "CRASHPLAN_SRV_MAX_MEM", "minimum", "1024M")
+		} else if heapMiB(options.Heap) < minimumHeapMiB || heapMiB(options.Heap) > maximumHeapMiB {
+			// Out-of-range values are not saved, so removing the variable later
+			// brings back the previous heap.
+			options.Logger.Warn("heap_setting_ignored", "item", "CRASHPLAN_SRV_MAX_MEM", "reason", "out_of_range", "minimum", "1024M", "maximum", "4T")
+			options.Heap = ""
 		}
 	}
 	raw := options.MountInfo
