@@ -17,7 +17,7 @@ import { BackupActions } from '../../shared/BackupActions'
 import { CurrentFile, StatusCard, useBackupStatus } from '../../shared/StatusCard'
 import { pairStatus, progressText, selectionBytes, selectionFiles, shortLabel } from '../../shared/backupStatus'
 import type { BackupStatus } from '../../shared/backupStatus'
-import { bytes, count, dateTime, percent, rate, relative, words } from '../../shared/format'
+import { bytes, compactCount, count, dateTime, percent, rate, relative, words } from '../../shared/format'
 import { eventKeys, eventLevel, isBackupEvent, sortAlerts, visibleAlert } from './events'
 
 const toneBadge: Record<BackupStatus['tone'], 'blue' | 'green' | 'orange' | 'red' | undefined> = {
@@ -99,7 +99,7 @@ function DestinationRow({ d, device }: { d: DestinationProgress; device?: Device
   })
   const state = connection(d)
   const activity = d.validating
-    ? 'Synchronizing'
+    ? 'Syncing backup index' + (d.sync && d.sync.percent >= 0 ? ` · ${percent(d.sync.percent)}` : '') + (d.sync ? ` · ${compactCount(d.sync.current)} archive entries read` : '')
     : d.maintenance
       ? 'Archive maintenance'
       : d.backingUp

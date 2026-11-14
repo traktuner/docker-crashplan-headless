@@ -35,11 +35,13 @@ const dest = (over: Record<string, unknown>) => ({
 test('synchronization is reported with progress like the desktop app', () => {
   const s = backupStatus({ engineReady: true, signedIn: true, progress: [dest({ validating: true, sync: { current: '25', total: '100', percent: 25, files: false } })] })
   assert.equal(s.kind, 'sync')
-  assert.equal(s.title, 'Synchronizing block information')
+  assert.equal(s.title, 'Syncing backup index')
   assert.equal(s.progress?.value, 25)
+  assert.equal(s.progress?.text, '25%')
   const unknown = backupStatus({ engineReady: true, signedIn: true, progress: [dest({ validating: true, sync: { current: '60800000', total: '15161306', percent: -1, files: false } })] })
   assert.equal(unknown.progress?.value, undefined)
-  assert.match(unknown.progress!.text, /60.8 million blocks checked/)
+  assert.doesNotMatch(unknown.progress!.text, /million|files|blocks|\d{4}/)
+  assert.equal(unknown.title, 'Syncing backup index')
 })
 
 const set = (over: Record<string, unknown> = {}) => ({
