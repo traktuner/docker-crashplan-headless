@@ -352,6 +352,47 @@ export interface BackupSummary {
   systemBusy: boolean
   batteryBlocked: boolean
 }
+export interface ProgressCounter {
+  current: string
+  total: string
+  /** 0..100, or -1 when the engine gives no usable total. */
+  percent: number
+  files: boolean
+}
+export interface SetProgress {
+  backupSetId: string
+  scanning: boolean
+  selected: boolean
+  filesScanned: string
+  bytesScanned: string
+  remainingFiles: string
+  remainingBytes: string
+  lastBackup: string
+  nextBackup: string
+  resumeInMs: string
+  sendingPath?: string
+}
+export interface DestinationProgress {
+  targetId: string
+  name: string
+  backingUp: boolean
+  validating: boolean
+  sync?: ProgressCounter
+  maintenance?: { cache: boolean; deep: boolean; step: string; percent: number }
+  notReadyCode?: string
+  outOfSpace: boolean
+  completedRateBytesPerSecond: string
+  sets: SetProgress[]
+}
+function plain(value: unknown): unknown {
+  if (isLosslessNumber(value)) return value.toString()
+  if (Array.isArray(value)) return value.map(plain)
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, plain(v)]),
+    )
+  return value
+}
 export interface BackupControl {
   backupSetId?: string
   planUid?: string
@@ -639,6 +680,18 @@ export class API {
   }
   backupSummary(): Promise<BackupSummary> {
     return this.request('/api/v1/backup/summary')
+  }
+  /** Live progress per destination, as the desktop app shows it. */
+  async backupProgress(): Promise<DestinationProgress[]> {
+    const raw = plain(await this.request('/api/v1/backup/progress')) as DestinationProgress[]
+    return raw.map((d) => ({
+      ...d,
+      sync: d.sync && { ...d.sync, percent: Number(d.sync.percent) },
+      maintenance: d.maintenance && {
+        ...d.maintenance,
+        percent: Number(d.maintenance.percent),
+      },
+    }))
   }
   backupControl(
     action: 'pause' | 'resume',

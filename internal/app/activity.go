@@ -16,6 +16,14 @@ func (s *Server) activityRoutes(handle func(string, string, bool, handler)) {
 		writeData(w, 200, data)
 		return nil
 	})
+	handle("GET /api/v1/backup/progress", "backup.progress", false, func(w http.ResponseWriter, r *http.Request, _ auth.Session) error {
+		data, err := s.native.BackupProgress(r.Context())
+		if err != nil {
+			return err
+		}
+		writeData(w, 200, data)
+		return nil
+	})
 	handle("GET /api/v1/alerts", "alerts", false, func(w http.ResponseWriter, r *http.Request, _ auth.Session) error {
 		data, err := s.native.Alerts(r.Context())
 		if err != nil {

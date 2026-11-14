@@ -109,6 +109,11 @@ func (s *Server) handler(local bool) http.Handler {
 			if mutation {
 				level = slog.LevelInfo
 			}
+			var field *engine.FieldError
+			if errors.As(err, &field) {
+				// Field names only: they say which native response changed, never a value.
+				s.options.Logger.Warn("native_response_mismatch", "operation", name, "field", field.Field)
+			}
 			s.options.Logger.Log(r.Context(), level, "request", "operation", name, "outcome", code, "duration_ms", time.Since(started).Milliseconds())
 		})
 	}

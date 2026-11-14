@@ -279,7 +279,7 @@ func projectSettings(raw []byte, definition settingsArea) ([]Setting, error) {
 	var err error
 	var wire map[string]json.RawMessage
 	if json.Unmarshal(raw, &wire) != nil || wire == nil {
-		return nil, ErrProtocol
+		return nil, &FieldError{Field: "settings"}
 	}
 	out := make([]Setting, 0, len(definition.Fields))
 	for _, spec := range definition.Fields {
@@ -290,14 +290,14 @@ func projectSettings(raw []byte, definition settingsArea) ([]Setting, error) {
 				Locked *bool           `json:"locked"`
 			}
 			if json.Unmarshal(raw, &field) != nil || field.Locked == nil || (len(field.Value) == 0 && spec.Kind != "optional-url") {
-				return nil, ErrProtocol
+				return nil, &FieldError{Field: spec.Name}
 			}
 			item.Available = true
 			item.Locked = *field.Locked
 			if len(field.Value) > 0 && string(field.Value) != "null" {
 				item.Value, err = normalizeSetting(spec, field.Value)
 				if err != nil {
-					return nil, ErrProtocol
+					return nil, &FieldError{Field: spec.Name}
 				}
 			}
 		}
