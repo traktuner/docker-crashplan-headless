@@ -66,20 +66,9 @@ func (c *Client) BrowseSource(ctx context.Context, id string, q SourceQuery) (So
 		body["parentPath"] = map[string]string{"path": q.Parent}
 	}
 	encoded, _ := json.Marshal(body)
-	raw, err = c.legacyRead(ctx, class, "POST", path, encoded, func(decoded []byte) probeResult {
-		if q.Parent == "" {
-			return probeInStep // roots do not depend on the request
-		}
-		var echo struct {
-			Parent struct {
-				Path string `json:"path"`
-			} `json:"parentPath"`
-		}
-		if json.Unmarshal(decoded, &echo) == nil && filepath.Clean(echo.Parent.Path) == filepath.Clean(q.Parent) {
-			return probeInStep
-		}
-		return probeMismatch
-	})
+	// No answer field proves which set, rules or page it belongs to, so this
+	// class keeps the strict barrier: a lost answer fails closed.
+	raw, err = c.legacyRequest(ctx, class, "POST", path, encoded, true, false)
 	raw, err = restoreResponse(raw, err, class)
 	if err != nil {
 		return SourcePage{}, err
