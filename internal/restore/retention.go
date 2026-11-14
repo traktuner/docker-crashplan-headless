@@ -31,7 +31,7 @@ func (s *Service) archived(id string) (record, error) {
 		}
 		seen[child] = true
 	}
-	if r.State != "accepted" && r.State != "rejected" {
+	if r.State != "accepted" && r.State != "rejected" && r.State != "acknowledged" {
 		return record{}, ErrJournal
 	}
 	return r, nil
@@ -85,10 +85,10 @@ func (s *Service) ArchiveOperations(ctx context.Context, ids []string) (int, err
 			}
 			continue
 		}
-		if r.State != "accepted" && r.State != "rejected" {
+		if r.State != "accepted" && r.State != "rejected" && r.State != "acknowledged" {
 			return 0, engine.ErrIndeterminate
 		}
-		if done, present := terminal[r.RestoreID]; r.State == "accepted" && r.RestoreID != "" && present && !done {
+		if done, present := terminal[r.RestoreID]; r.State != "rejected" && r.RestoreID != "" && present && !done {
 			return 0, engine.ErrInvalidRequest
 		}
 		for _, child := range r.Children {

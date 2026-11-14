@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,7 +70,15 @@ func safeError(err error) string {
 	}
 }
 
+// defaultMemoryLimit is the Go runtime's soft memory target for cphd when
+// GOMEMLIMIT is not set. It only makes the collector work earlier; it is not
+// a hard cap. Response bodies are capped at 8 MiB.
+const defaultMemoryLimit = 64 << 20
+
 func run() error {
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(defaultMemoryLimit)
+	}
 	cfg, err := config.Load(os.Getenv)
 	if err != nil {
 		return err
@@ -180,12 +189,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	owner := lifecycle.New(lifecycle.Options{Native: native, Scans: scans, Restores: helpers, Logger: logger, Version: version, Build: build})
 	restores, err := restore.NewService(native, restoreRoots, store, identity.Name)
 	if err != nil {
 		logger.Warn("restore_journal_unavailable")
 		restores = nil
 	}
+	ownerOptions := lifecycle.Options{Native: native, Scans: scans, Restores: helpers, Logger: logger, Version: version, Build: build}
+	if restores != nil {
+		ownerOptions.RestoreStats = restores
+	}
+	owner := lifecycle.New(ownerOptions)
 	localArchives, err := destinations.NewService(native, restoreRoots, store)
 	if err != nil {
 		return err
@@ -205,7 +218,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	server := app.New(native, sessions, app.Options{Logger: logger, Context: ctx, Sources: gate, Scans: scans, Runtime: runtime, Assets: assets, Lifecycle: owner, Restores: restores, RestoreHelpers: helpers, LocalArchives: localArchives, TrustedProxies: cfg.TrustedProxies})
+	// The API checks sources through the supervisor: the same deadline and the
+	// same single in-flight check, so a hung NFS call cannot block a worker.
+	server := app.New(native, sessions, app.Options{Logger: logger, Context: ctx, Sources: runtime, Scans: scans, Runtime: runtime, Assets: assets, Lifecycle: owner, Restores: restores, RestoreHelpers: helpers, LocalArchives: localArchives, TrustedProxies: cfg.TrustedProxies})
 	owner.SetNotify(server.Notify)
 	listener, err := controlsocket.Listen(cfg.Socket)
 	if err != nil {

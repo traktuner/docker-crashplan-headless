@@ -9,6 +9,14 @@ import (
 )
 
 func (s *Server) accountRoutes(handle func(string, string, bool, handler)) {
+	handle("GET /api/v1/account", "account.info", false, func(w http.ResponseWriter, r *http.Request, _ auth.Session) error {
+		info, err := s.native.Account(r.Context())
+		if err != nil {
+			return err
+		}
+		writeData(w, 200, info)
+		return nil
+	})
 	handle("POST /api/v1/account/replace-device/{action}", "account.replacement.complete", true, func(w http.ResponseWriter, r *http.Request, _ auth.Session) error {
 		var in struct {
 			Confirm string `json:"confirm"`

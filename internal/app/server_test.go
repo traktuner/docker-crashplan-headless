@@ -19,6 +19,7 @@ import (
 
 	"github.com/traktuner/crashplan-headless/internal/auth"
 	"github.com/traktuner/crashplan-headless/internal/engine"
+	"github.com/traktuner/crashplan-headless/internal/supervise"
 )
 
 type fixtureGate struct {
@@ -268,5 +269,43 @@ func TestWrongWebCredentialsSayWhatFailed(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), `"outcome":"WEB_LOGIN_FAILED"`) || strings.Contains(logs.String(), "fixture-web-password") {
 		t.Fatal("login failure log", logs.String())
+	}
+}
+
+// Audit M6: the sign-in body is read before a login slot is taken, so slow or
+// broken bodies cannot hold the few slots.
+func TestLoginBodyIsReadBeforeAdmission(t *testing.T) {
+	server, _, _ := newFixture(t)
+	for i := 0; i < 8; i++ {
+		release, err := server.sessions.AdmitLogin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer release()
+	}
+	w := request(server.WebHandler(), "POST", "/api/v1/session", `not json`, nil, "", "https://backup.fixture.invalid")
+	if w.Code != 400 {
+		t.Fatal("body not read before admission", w.Code)
+	}
+}
+
+func TestHealthReportsEmptyLanes(t *testing.T) {
+	server, _, _ := newFixture(t)
+	runtime, err := supervise.New(supervise.Options{Command: []string{"/bin/true"}, Sources: &fixtureGate{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.options.Runtime = runtime
+	w := request(server.UnixHandler(), "GET", "/api/v1/health", "", nil, "", "")
+	if !strings.Contains(w.Body.String(), `"lanes":{}`) {
+		t.Fatal("health lanes missing", w.Body.String())
+	}
+}
+
+func TestResponsePendingNoLongerDemandsARestart(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeError(w, engine.ErrLegacyPending)
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "NATIVE_RESPONSE_PENDING") || strings.Contains(w.Body.String(), "Restart the engine before") {
+		t.Fatal(w.Code, w.Body.String())
 	}
 }

@@ -7,11 +7,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/traktuner/crashplan-headless/internal/engine"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/traktuner/crashplan-headless/internal/engine"
 )
 
 var ErrBusy = errors.New("CONTROL_BUSY")
@@ -23,13 +26,24 @@ type RestoreGenerations interface {
 	Wake()
 }
 
+// RestoreStats receives live restore statistics events of the current
+// generation. Reset is called when a generation begins.
+type RestoreStats interface {
+	ResetRestoreStats()
+	ObserveRestoreStats(raw []byte)
+}
+
 type Options struct {
 	Restores        RestoreGenerations
+	RestoreStats    RestoreStats
 	Native          *engine.Client
 	Scans           *engine.Scans
 	Logger          *slog.Logger
 	MonitorInterval time.Duration
-	Version, Build  string
+	// RestoreRetry is the first delay before a failed automatic session
+	// restore is tried again; it doubles up to ten minutes. Default 15 s.
+	RestoreRetry   time.Duration
+	Version, Build string
 }
 type State struct {
 	Generation       string `json:"generation"`
@@ -38,21 +52,49 @@ type State struct {
 	EventsReady      bool   `json:"eventsReady"`
 	SessionRestore   string `json:"sessionRestore"`
 	ScanJournalReady bool   `json:"scanJournalReady"`
+	// Lanes lists native response classes whose answers are unresolved, as
+	// {class: "uncertain"}. Empty when all classes are usable.
+	Lanes map[string]string `json:"lanes"`
 }
+
+// Operation states: a queued operation whose waiter leaves before the worker
+// starts it is dropped, so it can never run later behind the waiter's back.
+const (
+	opQueued int32 = iota
+	opStarted
+	opAbandoned
+)
+
 type operation struct {
 	fn       func(context.Context) error
 	result   chan error
 	timeout  time.Duration
 	revision uint64
+	state    *atomic.Int32
 }
 type generation struct {
 	id     uint64
 	ctx    context.Context
 	cancel context.CancelFunc
 	queue  chan operation
+	kick   chan struct{}
 	wg     sync.WaitGroup
 	state  State
 }
+
+// notifyEvents are engine event kinds that invalidate browser data. Bodies
+// never reach the browser; the SSE stream carries a bare "update".
+var notifyEvents = []string{
+	"ApplicationStatusMessage", "BackupStatsSummaryMessage", "BackupStatsMessage",
+	"BackupStartedMessage", "BackupStoppedMessage", "BackupCompletedMessage",
+	"ScanStatsMessage", "AlertListMessage",
+	"RestoreJobsResponseMessage", "RestoreStatsMessage", "RestoreStartedMessage", "RestoreStoppedMessage",
+	"ComputersMessage", "ComputerConnectedMessage", "ComputerDisconnectedMessage", "TargetComputerUsagesMessage",
+}
+
+// notifySpacing is the minimum gap between event-driven browser updates.
+const notifySpacing = time.Second
+
 type Owner struct {
 	mu       sync.RWMutex
 	current  *generation
@@ -67,6 +109,9 @@ func New(options Options) *Owner {
 	}
 	if options.MonitorInterval == 0 {
 		options.MonitorInterval = 5 * time.Second
+	}
+	if options.RestoreRetry == 0 {
+		options.RestoreRetry = 15 * time.Second
 	}
 	return &Owner{options: options, failures: make(chan error, 1)}
 }
@@ -84,11 +129,12 @@ func (o *Owner) Snapshot() State {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	if o.current == nil {
-		return State{SessionRestore: "not_running", ScanJournalReady: o.options.Scans != nil}
+		return State{SessionRestore: "not_running", ScanJournalReady: o.options.Scans != nil, Lanes: map[string]string{}}
 	}
 	state := o.current.state
 	state.NativeSession = o.options.Native.Authorized()
 	state.EventsReady = o.options.Native.EventBus().Connected()
+	state.Lanes = o.options.Native.UncertainLanes()
 	return state
 }
 
@@ -107,7 +153,7 @@ func (o *Owner) Begin(parent context.Context, id uint64) error {
 	ctx, cancel := context.WithCancel(parent)
 	o.options.Native.SetToken("")
 	ctx = o.options.Native.BindGeneration(ctx)
-	g := &generation{id: id, ctx: ctx, cancel: cancel, queue: make(chan operation, 16), state: State{Generation: label, SessionRestore: "pending", ScanJournalReady: o.options.Scans != nil}}
+	g := &generation{id: id, ctx: ctx, cancel: cancel, queue: make(chan operation, 16), kick: make(chan struct{}, 1), state: State{Generation: label, SessionRestore: "pending", ScanJournalReady: o.options.Scans != nil}}
 	if o.options.Scans != nil {
 		if err := o.options.Scans.BeginGeneration(label); err != nil {
 			g.state.ScanJournalReady = false
@@ -122,13 +168,23 @@ func (o *Owner) Begin(parent context.Context, id uint64) error {
 		}
 	}
 	o.current = g
-	// Register subscriptions before the first dial. UI invalidations coalesce.
+	if o.options.RestoreStats != nil {
+		o.options.RestoreStats.ResetRestoreStats()
+	}
+	// Register subscriptions before the first dial. UI invalidations coalesce:
+	// at most one event-driven update per notifySpacing.
 	bus := o.options.Native.EventBus()
-	for _, kind := range []string{"ApplicationStatusMessage", "BackupStatsSummaryMessage", "ScanStatsMessage", "RestoreJobMessage"} {
+	for _, kind := range notifyEvents {
 		ch, unsubscribe, err := bus.Subscribe(kind)
 		if err != nil {
 			continue
 		}
+		stats := o.options.RestoreStats
+		if kind != "RestoreStatsMessage" && kind != "RestoreStoppedMessage" {
+			stats = nil
+		}
+		// Connection changes must not wait for the cached target list.
+		targets := strings.HasPrefix(kind, "Computer")
 		g.wg.Add(1)
 		go func() {
 			defer g.wg.Done()
@@ -137,17 +193,48 @@ func (o *Owner) Begin(parent context.Context, id uint64) error {
 				select {
 				case <-ctx.Done():
 					return
-				case <-ch:
-					o.changed()
+				case raw := <-ch:
+					if stats != nil {
+						stats.ObserveRestoreStats(raw)
+					}
+					if targets {
+						o.options.Native.InvalidateTargets()
+					}
+					select {
+					case g.kick <- struct{}{}:
+					default:
+					}
 				}
 			}
 		}()
 	}
-	g.wg.Add(2)
+	g.wg.Add(3)
+	go o.notifier(g)
 	go o.work(g)
 	go o.monitor(g)
 	return nil
 }
+
+// notifier turns event kicks into browser updates, spaced by notifySpacing.
+func (o *Owner) notifier(g *generation) {
+	defer g.wg.Done()
+	for {
+		select {
+		case <-g.ctx.Done():
+			return
+		case <-g.kick:
+			o.changed()
+			timer := time.NewTimer(notifySpacing)
+			select {
+			case <-g.ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+	}
+}
+
 func (o *Owner) End(id uint64) error {
 	o.mu.RLock()
 	g := o.current
@@ -195,7 +282,7 @@ func (o *Owner) do(wait context.Context, fn func(context.Context) error, timeout
 	if g == nil || g.ctx.Err() != nil {
 		return engine.ErrUnavailable
 	}
-	op := operation{revision: o.options.Native.SessionRevision(), fn: fn, result: make(chan error, 1), timeout: timeout}
+	op := operation{revision: o.options.Native.SessionRevision(), fn: fn, result: make(chan error, 1), timeout: timeout, state: new(atomic.Int32)}
 	select {
 	case <-wait.Done():
 		return engine.ErrUnavailable
@@ -212,10 +299,13 @@ func (o *Owner) do(wait context.Context, fn func(context.Context) error, timeout
 	case err := <-op.result:
 		return err
 	case <-wait.Done():
-		return engine.ErrIndeterminate
 	case <-g.ctx.Done():
-		return engine.ErrIndeterminate
 	}
+	if op.state.CompareAndSwap(opQueued, opAbandoned) {
+		// Never started: the worker drops it, so nothing was sent.
+		return errors.Join(engine.ErrNotDispatched, engine.ErrUnavailable)
+	}
+	return engine.ErrIndeterminate
 }
 func (o *Owner) work(g *generation) {
 	defer g.wg.Done()
@@ -224,6 +314,10 @@ func (o *Owner) work(g *generation) {
 		case <-g.ctx.Done():
 			return
 		case op := <-g.queue:
+			if !op.state.CompareAndSwap(opQueued, opStarted) {
+				// The waiter left before the start; it was told nothing ran.
+				continue
+			}
 			if g.ctx.Err() != nil {
 				op.result <- engine.ErrUnavailable
 				continue
@@ -253,10 +347,22 @@ func (o *Owner) monitor(g *generation) {
 	defer g.wg.Done()
 	ticker := time.NewTicker(o.options.MonitorInterval)
 	defer ticker.Stop()
-	var attemptedRestore bool
+	// Session restore: tried at the first ready tick, then again with backoff
+	// while it fails transiently and nobody signed in. A definite answer (no
+	// saved session, or the engine says it is not eligible) ends the attempts.
+	restoreDone := false
+	var nextRestore time.Time
+	retry := o.options.RestoreRetry
 	var lastTouch, lastScan time.Time
 	touchFailed := false
 	wasAuthorized := false
+	// Browser updates only when something the browser shows changed.
+	var last struct {
+		ready, authorized, events bool
+		restore                   string
+		lanes                     int
+	}
+	first := true
 	for {
 		select {
 		case <-g.ctx.Done():
@@ -278,28 +384,40 @@ func (o *Owner) monitor(g *generation) {
 				return
 			}
 			o.setState(g, func(s *State) { s.NativeReady = ready })
-			if ready && !attemptedRestore {
+			if ready && !restoreDone && !o.options.Native.Authorized() && !time.Now().Before(nextRestore) {
 				err := o.DoAccount(ctx, func(bound context.Context) error { return o.options.Native.RestoreSession(bound) })
-				attemptedRestore = !errors.Is(err, ErrBusy)
 				if o.options.Native.Authorized() {
 					err = nil
 				}
 				outcome := "complete"
-				if err != nil {
+				switch {
+				case errors.Is(err, ErrBusy) || errors.Is(err, engine.ErrLoginInProgress):
+					// Another account operation runs; try again next tick.
+					outcome = ""
+				case err != nil:
 					outcome = "needs_login"
-					o.options.Logger.Warn("native_session_restore_unavailable")
-				} else if !o.options.Native.Authorized() {
+					o.options.Logger.Warn("native_session_restore_unavailable", "retry_in_s", int(retry/time.Second))
+					nextRestore = time.Now().Add(retry)
+					retry = min(retry*2, 10*time.Minute)
+				case !o.options.Native.Authorized():
 					// No usable saved session, for example after moving an existing
 					// /config. Settings and archives are kept; the account needs one sign-in.
 					outcome = "needs_login"
+					restoreDone = true
 					o.options.Logger.Warn("native_sign_in_required", "hint", "sign in once on the web Account page or with: cphctl login <username> <server> (password on stdin)")
+				default:
+					restoreDone = true
 				}
-				o.setState(g, func(s *State) { s.SessionRestore = outcome })
+				if outcome != "" {
+					o.setState(g, func(s *State) { s.SessionRestore = outcome })
+				}
 			}
 			authorized := o.options.Native.Authorized()
 			if authorized && !wasAuthorized {
+				// A sign-in ends automatic restore attempts for this generation.
+				restoreDone = true
 				o.setState(g, func(s *State) {
-					if s.SessionRestore == "needs_login" {
+					if s.SessionRestore == "needs_login" || s.SessionRestore == "pending" {
 						s.SessionRestore = "complete"
 					}
 				})
@@ -334,7 +452,13 @@ func (o *Owner) monitor(g *generation) {
 				lastScan = time.Now()
 			}
 			cancel()
-			o.changed()
+			snapshot := o.Snapshot()
+			if first || snapshot.NativeReady != last.ready || snapshot.NativeSession != last.authorized || snapshot.EventsReady != last.events || snapshot.SessionRestore != last.restore || len(snapshot.Lanes) != last.lanes {
+				o.changed()
+			}
+			first = false
+			last.ready, last.authorized, last.events = snapshot.NativeReady, snapshot.NativeSession, snapshot.EventsReady
+			last.restore, last.lanes = snapshot.SessionRestore, len(snapshot.Lanes)
 		}
 	}
 }

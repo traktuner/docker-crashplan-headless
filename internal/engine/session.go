@@ -89,7 +89,10 @@ func (c *Client) RestoreSession(ctx context.Context) error {
 		return err
 	}
 	if !valid {
-		return store.Write("native-session", nil)
+		// Keep the saved token: valid:false can be transient while the engine
+		// starts, and only a successful sign-in replaces the saved session.
+		// The token is not used; the account needs a sign-in for now.
+		return nil
 	}
 	if err := c.acceptToken(ctx, token); err != nil {
 		return err

@@ -4,6 +4,7 @@ package app
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -94,6 +95,11 @@ func (s *Server) handler(local bool) http.Handler {
 				}
 			}
 			if err == nil {
+				if name != "events" && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+					compressed := &gzipJSON{ResponseWriter: w}
+					w = compressed
+					defer compressed.finish()
+				}
 				err = fn(w, r, principal)
 			}
 			if err != nil {
@@ -124,18 +130,14 @@ func (s *Server) handler(local bool) http.Handler {
 			defer func() {
 				s.options.Logger.Info("request", "operation", "web.login", "outcome", outcome, "duration_ms", time.Since(started).Milliseconds())
 			}()
-			release, err := s.sessions.AdmitLogin()
-			if err != nil {
-				outcome = errorCode(err)
-				writeError(w, err)
-				return
-			}
-			defer release()
-			r.Body = http.MaxBytesReader(w, r.Body, 70<<10)
 			if err := s.sessions.CheckRequestOrigin(r); err != nil {
 				writeError(w, err)
 				return
 			}
+			// Read the small body under a short deadline before taking one of
+			// the few login slots, so slow senders cannot hold the slots.
+			_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(loginBodyDeadline))
+			r.Body = http.MaxBytesReader(w, r.Body, 70<<10)
 			var in struct {
 				Username string `json:"username"`
 				Password string `json:"password"`
@@ -144,6 +146,13 @@ func (s *Server) handler(local bool) http.Handler {
 				writeError(w, err)
 				return
 			}
+			release, err := s.sessions.AdmitLogin()
+			if err != nil {
+				outcome = errorCode(err)
+				writeError(w, err)
+				return
+			}
+			defer release()
 			peer, splitErr := auth.ClientIP(r, s.options.TrustedProxies)
 			if splitErr != nil {
 				outcome = "CLIENT_ADDRESS_REJECTED"
@@ -356,6 +365,9 @@ func (s *Server) handler(local bool) http.Handler {
 		if s.options.Lifecycle != nil {
 			state.Native = s.options.Lifecycle.Snapshot()
 		}
+		if state.Native.Lanes == nil {
+			state.Native.Lanes = map[string]string{}
+		}
 		status := 200
 		if state.Status != "running" || !state.Native.NativeReady || !state.Native.EventsReady {
 			status = 503
@@ -440,6 +452,9 @@ func writeData(w http.ResponseWriter, status int, data any) {
 }
 
 var errWebLoginFailed = errors.New("WEB_LOGIN_FAILED")
+
+// loginBodyDeadline bounds reading the sign-in body before admission.
+const loginBodyDeadline = 5 * time.Second
 
 func errorCode(err error) string {
 	if errors.Is(err, errWebLoginFailed) {
@@ -557,7 +572,7 @@ func writeError(w http.ResponseWriter, err error) {
 		message = "A native archive count is still running or unresolved. Request its progress before starting another count."
 	case "NATIVE_RESPONSE_PENDING":
 		status = http.StatusConflict
-		message = "A previous native response is unresolved. Restart the engine before repeating this operation."
+		message = "An earlier native answer for this kind of action is still unresolved, so this action was not sent. Check the current state; if it stays blocked, restart the engine."
 	case "NATIVE_MFA_BROWSER_REQUIRED":
 		status = 409
 		message = "This account requires additional verification. Use browser SSO or the account console; the native password login has no MFA code field."
@@ -611,7 +626,7 @@ func writeError(w http.ResponseWriter, err error) {
 		message = "Unlock this archive in CrashPlan before browsing or restoring it."
 	case "ARCHIVE_SEARCH_PENDING":
 		status = 409
-		message = "An archive search is active or its outcome is unknown. An uncertain search remains blocked until the engine restarts."
+		message = "An archive search is active or its outcome is unknown. Try again in a few minutes."
 	case "ARCHIVE_SEARCH_SCOPE_UNSUPPORTED":
 		status = 422
 		message = "This archive supports archive-wide search. Search from the archive root."
@@ -686,4 +701,33 @@ func writeError(w http.ResponseWriter, err error) {
 	if _, err := w.Write(append(encoded, '\n')); err != nil {
 		slog.Warn("error_response_write_failed")
 	}
+}
+
+// gzipJSON buffers one API answer and compresses it when it is large enough
+// to matter (history, listings). The SSE stream is never wrapped.
+type gzipJSON struct {
+	http.ResponseWriter
+	status int
+	buf    bytes.Buffer
+}
+
+func (g *gzipJSON) WriteHeader(status int)      { g.status = status }
+func (g *gzipJSON) Write(p []byte) (int, error) { return g.buf.Write(p) }
+func (g *gzipJSON) finish() {
+	h := g.ResponseWriter.Header()
+	h.Add("Vary", "Accept-Encoding")
+	if g.status == 0 {
+		g.status = http.StatusOK
+	}
+	if g.buf.Len() < 1024 {
+		g.ResponseWriter.WriteHeader(g.status)
+		_, _ = g.ResponseWriter.Write(g.buf.Bytes())
+		return
+	}
+	h.Set("Content-Encoding", "gzip")
+	h.Del("Content-Length")
+	g.ResponseWriter.WriteHeader(g.status)
+	zw := gzip.NewWriter(g.ResponseWriter)
+	_, _ = zw.Write(g.buf.Bytes())
+	_ = zw.Close()
 }

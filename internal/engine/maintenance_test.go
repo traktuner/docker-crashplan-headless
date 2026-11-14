@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"testing"
@@ -79,5 +80,39 @@ func TestArchiveMaintenanceUsesOnlyNamedAuthorizedCommand(t *testing.T) {
 				t.Fatal("replayed or invalid dispatch", commands)
 			}
 		})
+	}
+}
+
+func TestReconnectChecksTargetAndSendsStockCommand(t *testing.T) {
+	var commands []string
+	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/GetComputers":
+			io.WriteString(w, `{"ComputersMessage":{"computers":[{"peerId":"7","properties":{"ME":"true"}},{"peerId":"9","target":true,"properties":{"DCODE":"DISCONNECTED"}}]}}`)
+		case "/v0/Command":
+			var in struct {
+				Command string `json:"command"`
+			}
+			json.NewDecoder(r.Body).Decode(&in)
+			commands = append(commands, in.Command)
+			io.WriteString(w, `{"results":[{"command":{"name":"reconnect"}}]}`)
+		default:
+			t.Error(r.URL.Path)
+		}
+	})
+	c.SetToken("fixture")
+	if err := c.Reconnect(context.Background(), "9"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.cachedTargets(c.SessionRevision()); ok {
+		t.Fatal("target list kept after reconnect")
+	}
+	for _, bad := range []string{"7", "8", "09", ""} {
+		if err := c.Reconnect(context.Background(), bad); !errors.Is(err, ErrInvalidRequest) {
+			t.Fatal(bad, err)
+		}
+	}
+	if len(commands) != 1 || commands[0] != "reconnect" {
+		t.Fatal(commands)
 	}
 }

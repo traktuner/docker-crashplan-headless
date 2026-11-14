@@ -33,6 +33,10 @@ One native event socket serves status, SSO, restore helper requests and archive 
 Archive requests retain their original query in the native request registry.
 Response processing verifies request, session, source, destination and plan identity.
 An unresolved dispatched action retains its uncertainty barrier until the engine restarts.
+A received native rejection (an answer of the expected class with error ids) is an answer, not a loss: it never sets a barrier.
+Read uncertainty and action uncertainty are kept apart, so a failed restore-job list read never blocks restore controls.
+Restore start/stop/remove verify their outcome with a fresh job list instead: the engine sends no direct reply to them.
+`GET /api/v1/health` lists unresolved classes in `native.lanes`; the log entries `native_lane_uncertain` and `native_lane_recovered` name the class and cause, never values.
 Read-only requests always wait for their answer, even after the browser leaves.
 A read class that lost an answer recovers with the next answer that verifiably belongs to its request (echoed query, source, target, backup set or a parameterless request); classes whose answers prove nothing, like backup selection browsing, keep the strict barrier; a foreign answer is rejected, never shown.
 Submission records survive restart and prevent automatic duplicate scan, restore and local archive actions.

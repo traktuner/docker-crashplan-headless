@@ -310,6 +310,11 @@ func (g *Gate) Roots() []string { return slices.Clone(g.roots) }
 
 // Check reads mountinfo before touching any source. The first ready identities
 // remain bound for this daemon lifetime; source replacement requires a restart.
+//
+// A definite state is a Reason (not mounted, wrong filesystem, missing marker,
+// empty, changed identity or path). A plain ErrNotReady is an ambiguous I/O
+// failure on a mounted source (for example ESTALE or EIO on NFS), which the
+// supervisor may debounce.
 func (g *Gate) Check() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -333,15 +338,22 @@ func (g *Gate) Check() error {
 		statErr := syscall.Fstat(fd, &stat)
 		fsErr := syscall.Fstatfs(fd, &fs)
 		magic, known := filesystemMagic[mount.FS]
-		if statErr != nil || fsErr != nil || (known && int64(fs.Type) != magic) {
+		if statErr != nil || fsErr != nil {
 			dir.Close()
 			return ErrNotReady
+		}
+		if known && int64(fs.Type) != magic {
+			dir.Close()
+			return FilesystemRejected
 		}
 		if g.sentinel != "" {
 			sentinelFD, e := syscall.Openat(fd, g.sentinel, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 			if e != nil {
 				dir.Close()
-				return SentinelMissing
+				if e == syscall.ENOENT || e == syscall.ELOOP || e == syscall.ENOTDIR {
+					return SentinelMissing
+				}
+				return ErrNotReady
 			}
 			var sentinelStat syscall.Stat_t
 			e = syscall.Fstat(sentinelFD, &sentinelStat)
@@ -354,7 +366,7 @@ func (g *Gate) Check() error {
 		names, readErr := dir.Readdirnames(1)
 		closeErr := dir.Close()
 		if (readErr != nil && !errors.Is(readErr, io.EOF)) || closeErr != nil {
-			return IdentityChanged
+			return ErrNotReady
 		}
 		if requiresContent(mount, g.sentinel) && len(names) == 0 {
 			return SourceEmpty
@@ -363,12 +375,15 @@ func (g *Gate) Check() error {
 	}
 	post, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
-		return IdentityChanged
+		return ErrNotReady
 	}
 	for i, root := range g.roots {
 		m, err := g.sourceMount(post, root)
-		if err != nil || m != identities[i].Mount {
-			return ErrNotReady
+		if err != nil {
+			return err
+		}
+		if m != identities[i].Mount {
+			return IdentityChanged
 		}
 	}
 	if err := g.checkPins(identities); err != nil {
@@ -377,7 +392,7 @@ func (g *Gate) Check() error {
 	if g.bound == nil {
 		g.bound = identities
 	} else if !slices.Equal(g.bound, identities) {
-		return ErrNotReady
+		return IdentityChanged
 	}
 	return nil
 }

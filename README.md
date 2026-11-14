@@ -65,8 +65,10 @@ until this is done and uses the same browser sign-in as the desktop app (email, 
 and verification code on the CrashPlan page).
 The device identity in `/config` is reused, so no device adoption should be needed.
 `USER_ID`, `GROUP_ID`, `SUP_GROUP_IDS`, `UMASK` and `CRASHPLAN_SRV_MAX_MEM` work the same way.
-One difference: without `USER_ID` the engine runs as root, so it can read every file you mount.
+One difference: without `USER_ID` the engine runs as root, so it can read every file you mount
+(jlesage runs as user 1000 by default; set `USER_ID=1000` and `GROUP_ID=1000` to keep that).
 Files in `/config` that belong to another user are taken over automatically.
+The engine starts only when something is mounted at or below `/storage`; until then it waits and the log says `sources_waiting_for_storage`.
 
 ## Documentation
 

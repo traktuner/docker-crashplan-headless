@@ -34,13 +34,18 @@ A lost response or failed final record remains indeterminate.
 Accepted means the engine accepted the submission.
 It does not mean files were restored successfully.
 The job view reports native counters, destination, completion/cancellation and imported-job admission.
+Each job has a state like the desktop app (`running`, `waiting`, `stopped`, `completed`, `canceled`), the receive rate and the estimated time left while running, and `blockedReason` `STOPPED` (stopped by a user) or `RETRY_DELAYED` (the engine waits five minutes after an error).
 Resume rechecks writable-root admission.
+Start, stop and remove are sent once; when the answer is lost, a fresh job list decides whether it took effect, otherwise the result is indeterminate.
+Clear completed removes finished jobs from the queue, like the desktop app's "Clear all".
 Removing a native job does not delete restored files.
 
 The active history holds up to 1024 submissions.
 Explicit history archival retains permanent replay records.
 Batches are archived with all children.
 Active jobs and unresolved submissions cannot be archived.
+A definite native rejection (no space, read-only destination, missing path, permission check) is recorded as rejected.
+An indeterminate submission can be acknowledged after review (`POST /api/v1/restore/operations/{id}/acknowledge`); it stays a permanent replay record and can then be archived.
 A damaged journal disables new restore submissions while backup supervision continues.
 
 ## CLI examples
@@ -59,6 +64,8 @@ cphctl restore helper
 cphctl restore stop 99
 cphctl restore resume 99
 cphctl restore remove 99
+cphctl restore clear-completed
+cphctl restore acknowledge aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 ```
 
 The start command prints its request ID before transport.
@@ -72,6 +79,7 @@ Run `cphctl help` for the complete command syntax.
 
 Authenticated routes use the `/api/v1/restore` prefix.
 They cover roots, archive sets, browse, search, versions, selection statistics, jobs and submission history.
+`POST /api/v1/restore/jobs/clear-completed` answers `{"removed": n}`.
 Web mutations require the local session, CSRF token and the original page's engine-context precondition.
 The private Unix API uses the same typed operations.
 Neither interface exposes arbitrary native commands or native credentials.

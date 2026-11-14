@@ -62,6 +62,8 @@ For network shares, set `CPH_SOURCE_SENTINEL` and create the marker file in ever
 On NFS, a subfolder of a share looks like the share's top folder to these checks, so only the marker file protects it.
 Sources are detected at start: to add one, mount it and restart the container. Without any mount at or below `/storage`, the engine waits; the daemon and `cphctl` still run.
 
+A running engine is checked every 30 seconds. A definite change (not mounted, other filesystem or path, missing marker file, empty) stops it at once. An I/O error or a check that takes longer than 20 seconds on a still-mounted source (for example a stale NFS handle) stops it only after three such failures in a row; the log entry `source_check_failed` counts them.
+
 ## Web interface
 
 These settings apply only with `CPH_MODE=web`.
@@ -107,7 +109,8 @@ The defaults return unused memory to the host. Change them only for a measured r
 | Variable | Required | Default | Meaning |
 | --- | --- | --- | --- |
 | `CPH_GC` | no | `g1` | Garbage collector: `g1`, `shenandoah` or `zgc`. |
-| `CPH_G1_PERIODIC_GC_MS` | no | `300000` | G1: collect after this idle time and shrink the heap. |
+| `CPH_G1_PERIODIC_GC_MS` | no | `900000` | G1: collect after this idle time and shrink the heap. |
+| `CPH_WIDE_OOPS` | no | `0` | `1`: keep the JVM default for heaps from 32737 MiB to 65000 MiB. By default such heaps get `-XX:ObjectAlignmentInBytes=16`, which keeps compressed object references (a plain 40G heap holds about what 31G holds with them). Not used with `zgc`. |
 | `CPH_UNCOMMIT_DELAY_MS` | no | `300000` | Shenandoah/ZGC: return memory after this delay. |
 | `CPH_MAX_HEAP_FREE_RATIO` | no | `30` | Shrink the heap when more than this percentage is free. |
 | `CPH_MIN_HEAP_FREE_RATIO` | no | `15` | Grow the heap when less than this percentage is free. |
@@ -115,7 +118,10 @@ The defaults return unused memory to the host. Change them only for a measured r
 | `CPH_MALLOC_ARENA_MAX` | no | `2` | Limit of native allocation arenas; fewer means less fragmentation. |
 
 Give the container a memory limit above the heap, with room for native memory.
+The launcher warns in the console log when the container limit leaves less than 2 GiB above the heap.
+The engine exits on a Java `OutOfMemoryError` (`-XX:+ExitOnOutOfMemoryError`) instead of running on with dead backup threads; the container restart policy starts it again. `CPH_EXTRA_JAVA_OPTS` can override each of these flags.
 The saved heap is the first `-Xmx<size>` in `/config/conf/jvm_args`; lines starting with `#` are skipped.
+The control daemon sets a soft Go memory target of 64 MiB unless `GOMEMLIMIT` is set.
 
 ## Advanced and diagnostics
 

@@ -37,6 +37,51 @@ func (s *Server) restoreRoutes(handle func(string, string, bool, handler)) {
 		writeData(w, 200, map[string]int{"archived": count})
 		return nil
 	})
+	handle("POST /api/v1/restore/operations/{id}/acknowledge", "restore.history.acknowledge", true, func(w http.ResponseWriter, r *http.Request, _ auth.Session) error {
+		if s.options.Restores == nil {
+			return restore.ErrJournal
+		}
+		var in struct{}
+		if err := decode(w, r, &in); err != nil {
+			return err
+		}
+		op, err := s.options.Restores.AcknowledgeOperation(r.PathValue("id"))
+		if err != nil {
+			return err
+		}
+		s.Notify()
+		writeData(w, 200, op)
+		return nil
+	})
+	handle("POST /api/v1/restore/jobs/clear-completed", "restore.clear", true, func(w http.ResponseWriter, r *http.Request, _ auth.Session) error {
+		if s.options.Restores == nil {
+			return restore.ErrJournal
+		}
+		var in struct{}
+		if err := decode(w, r, &in); err != nil {
+			return err
+		}
+		removed := 0
+		var partial error
+		err := s.mutation(r.Context(), func(ctx context.Context) error {
+			var err error
+			removed, err = s.options.Restores.ClearCompleted(ctx)
+			if err != nil && removed > 0 {
+				partial = err
+				return nil
+			}
+			return err
+		})
+		if err != nil {
+			return err
+		}
+		if partial != nil {
+			// Some jobs were removed; the rest stay listed. Code only.
+			s.options.Logger.Warn("restore_clear_partial", "removed", removed, "outcome", errorCode(partial))
+		}
+		writeData(w, 200, map[string]int{"removed": removed})
+		return nil
+	})
 	handle("POST /api/v1/restore/original", "restore.original", true, func(w http.ResponseWriter, r *http.Request, _ auth.Session) error {
 		if s.options.Restores == nil {
 			return restore.ErrJournal

@@ -5,12 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"time"
 )
 
 var ErrContentsPending = errors.New("ARCHIVE_STATISTICS_PENDING")
 
+const contentsClass = "GetFileContentsResultMessage"
+
+// contentsDrain is how long a count whose request failed, or whose stream
+// became uncertain, may stay silent before another query may take the lane.
+// Results carry the complete query identity, so a late result of the old
+// query is never attributed to a different one.
+var contentsDrain = 45 * time.Second
+
 // One native count stream bounds background work. It outlives an HTTP caller.
-// Only its ordered terminal event permits another query to take this lane.
+// Its ordered terminal event permits another query to take this lane; a
+// failed or uncertain stream releases it after a bounded silent drain.
 type contentsStream struct {
 	mu                           sync.Mutex
 	query                        ArchiveQuery
@@ -18,8 +28,36 @@ type contentsStream struct {
 	epoch                        uint64
 	snapshot                     *ArchiveContents
 	closed, delivered, uncertain bool
+	requestFailed                bool
+	activity                     time.Time
 	failure                      error
 }
+
+// expired reports a failed or uncertain stream without a terminal event that
+// stayed silent for the whole drain. The caller holds s.mu.
+func (s *contentsStream) expired(now time.Time) bool {
+	return !s.closed && (s.requestFailed || s.uncertain) && now.Sub(s.activity) >= contentsDrain
+}
+
+// contentsUncertain reports an unresolved count for health output.
+func (c *Client) contentsUncertain() bool {
+	c.contentsMu.Lock()
+	tracker := c.contents
+	c.contentsMu.Unlock()
+	if tracker == nil {
+		return false
+	}
+	tracker.mu.Lock()
+	active := tracker.active
+	tracker.mu.Unlock()
+	if active == nil {
+		return false
+	}
+	active.mu.Lock()
+	defer active.mu.Unlock()
+	return !active.closed && (active.requestFailed || active.uncertain) && !active.expired(time.Now())
+}
+
 type contentsTracker struct {
 	mu     sync.Mutex
 	active *contentsStream
@@ -45,7 +83,7 @@ func (c *Client) contentsTracker(ctx context.Context) (*contentsTracker, error) 
 		return c.contents, nil
 	}
 	bus := c.EventBus()
-	events, unsubscribe, err := bus.Subscribe("GetFileContentsResultMessage")
+	events, unsubscribe, err := bus.Subscribe(contentsClass)
 	if err != nil {
 		return nil, err
 	}
@@ -111,6 +149,9 @@ func (s *contentsStream) consume(raw []byte, epoch uint64, terminal bool) {
 		return
 	}
 	match, err := matchArchiveQuery(s.query, raw)
+	if match {
+		s.activity = time.Now()
+	}
 	if err != nil {
 		if errors.Is(err, ErrProtocol) {
 			s.failure = err
@@ -175,6 +216,12 @@ func (c *Client) countArchive(ctx context.Context, q ArchiveQuery) (ArchiveConte
 		if active.failure != nil && active.closed {
 			replace = true
 		}
+		if active.expired(time.Now()) {
+			// No terminal event arrived during the drain. Release the lane
+			// instead of blocking every count until the engine restarts.
+			replace = true
+			logLane("native_lane_recovered", contentsClass, "read", causeDrain, nil, nil)
+		}
 		same := active.query == q && active.revision == revision
 		active.mu.Unlock()
 		if !replace {
@@ -185,11 +232,13 @@ func (c *Client) countArchive(ctx context.Context, q ArchiveQuery) (ArchiveConte
 			return active.result()
 		}
 	}
-	active = &contentsStream{query: q, epoch: epoch, revision: revision}
+	active = &contentsStream{query: q, epoch: epoch, revision: revision, activity: time.Now()}
 	tracker.active = active
 	tracker.mu.Unlock()
 	raw, requestErr := c.request(ctx, "POST", "/v0/GetFileContents", q.body(""), true, false)
-	raw, requestErr = restoreResponse(raw, requestErr, "GetFileContentsResultMessage")
+	// A native answer with error ids ends the count: no stream follows.
+	rejected := requestErr != nil && receivedRejection(raw, contentsClass)
+	raw, requestErr = restoreResponse(raw, requestErr, contentsClass)
 	if requestErr == nil {
 		active.consume(raw, tracker.bus.Epoch(), false)
 	}
@@ -199,6 +248,21 @@ func (c *Client) countArchive(ctx context.Context, q ArchiveQuery) (ArchiveConte
 			tracker.active = nil
 		}
 		tracker.mu.Unlock()
+	} else if rejected {
+		active.mu.Lock()
+		if !active.closed {
+			active.failure = requestErr
+			active.closed = true
+		}
+		active.mu.Unlock()
+	} else if requestErr != nil {
+		active.mu.Lock()
+		if !active.closed {
+			active.requestFailed = true
+			active.activity = time.Now()
+			logLane("native_lane_uncertain", contentsClass, "read", lossCause(requestErr), requestErr, raw)
+		}
+		active.mu.Unlock()
 	}
 	if !c.sessionCurrent(ctx) || !c.currentGeneration(ctx) {
 		return ArchiveContents{}, ErrSessionChanged

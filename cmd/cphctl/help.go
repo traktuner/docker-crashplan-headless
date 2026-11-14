@@ -23,6 +23,8 @@ security derive-key --output NEW_PRIVATE_FILE
 restore roots|sets|browse|versions|contents|search|start|jobs|operations|helper
 restore stop|resume|remove ID
 restore archive --confirm ARCHIVE REQUEST_ID...
+restore acknowledge REQUEST_ID
+restore clear-completed
 engine restart
 
 Account login/configuration/SSO and security mutations read a JSON object from stdin.

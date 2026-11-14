@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math"
+	"math/big"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -168,7 +170,7 @@ var markerPattern = regexp.MustCompile(`^/tmp/[0-9]{1,20}\.txt$`)
 func (c *Client) CheckRestore(ctx context.Context) (RestoreCheck, error) {
 	ctx = c.operationContext(ctx)
 	raw, err := c.legacyRequest(ctx, "RestoreCheckResponseMessage", "POST", "/v0/RestoreCheckRequest", []byte(`{}`), true, true)
-	raw, err = restoreResponse(raw, err, "RestoreCheckResponseMessage")
+	raw, err = actionResponse(raw, err, "RestoreCheckResponseMessage")
 	if err != nil {
 		return RestoreCheck{}, err
 	}
@@ -309,7 +311,7 @@ func (c *Client) AddRestore(ctx context.Context, credentials RestoreCredentials,
 		return "", ErrInvalidRequest
 	}
 	raw, err := c.request(ctx, "POST", "/v1/AddRestore", body, true, true)
-	raw, err = restoreResponse(raw, err, "AddRestoreResponseMessage")
+	raw, err = actionResponse(raw, err, "AddRestoreResponseMessage")
 	if err != nil {
 		return "", err
 	}
@@ -322,34 +324,178 @@ func (c *Client) AddRestore(ctx context.Context, credentials RestoreCredentials,
 	return wire.ID.String(), nil
 }
 
+// RestoreJob is one native restore queue entry. State, rate and remaining
+// time follow the desktop app's restore_job_stats_model.js; without live
+// restore statistics the job is "waiting" with an unknown rate.
 type RestoreJob struct {
-	ID                          string `json:"id"`
-	SourceID                    string `json:"sourceId"`
-	TargetID                    string `json:"targetId"`
-	Completed                   bool   `json:"completed"`
-	Canceled                    bool   `json:"canceled"`
-	NumFiles                    string `json:"numFiles"`
-	FilesRestored               string `json:"filesRestored"`
-	NumBytes                    string `json:"numBytes"`
-	BytesRestored               string `json:"bytesRestored"`
+	ID            string `json:"id"`
+	SourceID      string `json:"sourceId"`
+	TargetID      string `json:"targetId"`
+	Completed     bool   `json:"completed"`
+	Canceled      bool   `json:"canceled"`
+	NumFiles      string `json:"numFiles"`
+	FilesRestored string `json:"filesRestored"`
+	NumBytes      string `json:"numBytes"`
+	BytesRestored string `json:"bytesRestored"`
+	// State is running, waiting, stopped, completed or canceled.
+	State string `json:"state"`
+	// RateBytesPerSecond is the receive rate while running; "0" when unknown.
+	RateBytesPerSecond string `json:"rateBytesPerSecond"`
+	// RemainingMs is the estimated time left while running; "-1" when unknown.
+	RemainingMs string `json:"remainingMs"`
+	// BlockedReason says why a job does not run: STOPPED (stopped by a user)
+	// or RETRY_DELAYED (the engine waits after an error and resumes itself).
+	BlockedReason               string `json:"blockedReason,omitempty"`
 	destination, userName, kind string
 	hasUser                     bool
+	resumeTime                  int64
 }
 
 func (j RestoreJob) Destination() string { return j.destination }
 func (j RestoreJob) UserName() string    { return j.userName }
 func (j RestoreJob) UsesHelper() bool    { return j.kind == "CLIENT" && j.hasUser }
+
+// stopped is the engine's own pause rule (RestoreJob.isPaused): a resume time
+// in the future. stopRestore sets it to Long.MAX_VALUE, startRestore to 0, an
+// error delay to now + 5 minutes.
+func (j RestoreJob) stopped(now time.Time) bool {
+	return j.resumeTime > now.UnixMilli()
+}
+
+// RestoreStats is the live statistics part of RestoreStatsMessage and
+// RestoreStoppedMessage. Counters stay exact decimal strings.
+type RestoreStats struct {
+	RestoreID                                        string
+	Restoring, Stopped, Completed, Selected          bool
+	Rate                                             float64
+	NumFiles, FilesRestored, NumBytes, BytesRestored string
+}
+
+// ParseRestoreStats reads the restoreStats object of a RestoreStatsMessage or
+// RestoreStoppedMessage event body. ok is false for anything incomplete.
+func ParseRestoreStats(raw []byte) (RestoreStats, bool) {
+	var wire struct {
+		Stats *struct {
+			ID            json.Number  `json:"restoreId"`
+			Restoring     *bool        `json:"restoring"`
+			Stopped       *bool        `json:"stopped"`
+			Completed     *bool        `json:"completed"`
+			Selected      *bool        `json:"selectedForRestore"`
+			Rate          *json.Number `json:"receiveRateInBytesPerSec"`
+			NumFiles      json.Number  `json:"numFilesToRestore"`
+			FilesRestored json.Number  `json:"numFilesRestored"`
+			NumBytes      json.Number  `json:"numBytesToRestore"`
+			BytesRestored json.Number  `json:"numBytesRestored"`
+		} `json:"restoreStats"`
+	}
+	if json.Unmarshal(raw, &wire) != nil || wire.Stats == nil {
+		return RestoreStats{}, false
+	}
+	w := wire.Stats
+	if !validID(w.ID.String()) || w.Restoring == nil || w.Stopped == nil || w.Completed == nil {
+		return RestoreStats{}, false
+	}
+	out := RestoreStats{RestoreID: w.ID.String(), Restoring: *w.Restoring, Stopped: *w.Stopped, Completed: *w.Completed}
+	if w.Selected != nil {
+		out.Selected = *w.Selected
+	}
+	if w.Rate != nil {
+		rate, err := w.Rate.Float64()
+		if err != nil || rate < 0 || math.IsNaN(rate) || math.IsInf(rate, 0) {
+			return RestoreStats{}, false
+		}
+		out.Rate = rate
+	}
+	for _, counter := range []struct {
+		number json.Number
+		out    *string
+	}{{w.NumFiles, &out.NumFiles}, {w.FilesRestored, &out.FilesRestored}, {w.NumBytes, &out.NumBytes}, {w.BytesRestored, &out.BytesRestored}} {
+		if counter.number == "" {
+			continue
+		}
+		n, ok := new(big.Int).SetString(counter.number.String(), 10)
+		if !ok || n.Sign() < 0 {
+			return RestoreStats{}, false
+		}
+		*counter.out = n.String()
+	}
+	return out, true
+}
+
+// validRestoreRate is the desktop app's CPRule.isRateValid: above 10 KB/s.
+const validRestoreRate = 10 * 1024
+
+// ApplyStats derives state, rate and remaining time like the desktop app's
+// RestoreJobStatsModel.getCurrentStatus. stats may be nil (none received).
+func (j *RestoreJob) ApplyStats(stats *RestoreStats, now time.Time) {
+	j.State, j.RateBytesPerSecond, j.RemainingMs, j.BlockedReason = "waiting", "0", "-1", ""
+	if stats != nil && stats.RestoreID != j.ID {
+		stats = nil
+	}
+	switch {
+	case j.Canceled:
+		j.State = "canceled"
+		return
+	case j.Completed || (stats != nil && stats.Completed):
+		j.State = "completed"
+		return
+	case j.stopped(now):
+		j.State = "stopped"
+		j.BlockedReason = "RETRY_DELAYED"
+		if j.resumeTime == math.MaxInt64 {
+			j.BlockedReason = "STOPPED"
+		}
+		return
+	case stats == nil:
+		return
+	case stats.Stopped:
+		j.State = "stopped"
+		j.BlockedReason = "STOPPED"
+		return
+	case !stats.Restoring:
+		return
+	}
+	// Restoring: the live counters are newer than the queue entry.
+	for _, counter := range []struct{ from, to *string }{{&stats.NumFiles, &j.NumFiles}, {&stats.FilesRestored, &j.FilesRestored}, {&stats.NumBytes, &j.NumBytes}, {&stats.BytesRestored, &j.BytesRestored}} {
+		if *counter.from != "" {
+			*counter.to = *counter.from
+		}
+	}
+	if stats.Rate <= validRestoreRate {
+		if stats.Selected {
+			return // queued behind another restore
+		}
+		j.State = "running"
+		return
+	}
+	j.State = "running"
+	j.RateBytesPerSecond = strconv.FormatFloat(math.Floor(stats.Rate), 'f', 0, 64)
+	total, okTotal := new(big.Float).SetString(j.NumBytes)
+	done, okDone := new(big.Float).SetString(j.BytesRestored)
+	if okTotal && okDone {
+		remaining := new(big.Float).Sub(total, done)
+		if remaining.Sign() < 0 {
+			remaining.SetInt64(0)
+		}
+		ms, _ := new(big.Float).Quo(new(big.Float).Mul(remaining, big.NewFloat(1000)), big.NewFloat(stats.Rate)).Int(nil)
+		j.RemainingMs = ms.String()
+	}
+}
+
 func (c *Client) RestoreJobs(ctx context.Context) ([]RestoreJob, error) {
 	ctx = c.operationContext(ctx)
-	raw, err := c.legacyRead(ctx, "RestoreJobsResponseMessage", "PUT", "/v0/RestoreJobsRequest", []byte(`{}`), func([]byte) probeResult {
-		// ControlRestore answers with the same class; a list read must not
-		// clear an uncertainty that a restore control left behind.
-		return probeUnknown
-	})
+	// Every answer of this class is the whole queue. ControlRestore answers
+	// with the same class but verifies itself, so it never relies on this
+	// lane: a list read may clear the read uncertainty it left.
+	raw, err := c.legacyRead(ctx, "RestoreJobsResponseMessage", "PUT", "/v0/RestoreJobsRequest", []byte(`{}`), anyAnswer)
 	raw, err = restoreResponse(raw, err, "RestoreJobsResponseMessage")
 	if err != nil {
 		return nil, err
 	}
+	return decodeRestoreJobs(raw)
+}
+
+func decodeRestoreJobs(raw []byte) ([]RestoreJob, error) {
 	var wire struct {
 		Jobs *[]struct {
 			ID            json.Number `json:"restoreId"`
@@ -364,11 +510,13 @@ func (c *Client) RestoreJobs(ctx context.Context) ([]RestoreJob, error) {
 			FilesRestored json.Number `json:"numFilesRestored"`
 			NumBytes      json.Number `json:"numBytesToRestore"`
 			BytesRestored json.Number `json:"numBytesRestored"`
+			ResumeTime    json.Number `json:"resumeTime"`
 		} `json:"jobs"`
 	}
 	if json.Unmarshal(raw, &wire) != nil || wire.Jobs == nil || len(*wire.Jobs) > 10000 {
 		return nil, ErrProtocol
 	}
+	now := time.Now()
 	result := make([]RestoreJob, 0, len(*wire.Jobs))
 	seen := map[string]bool{}
 	for _, item := range *wire.Jobs {
@@ -400,11 +548,51 @@ func (c *Client) RestoreJobs(ctx context.Context) ([]RestoreJob, error) {
 			}
 			*counter.out = counter.number.String()
 		}
+		if item.ResumeTime != "" {
+			resume, e := item.ResumeTime.Int64()
+			if e != nil {
+				return nil, ErrProtocol
+			}
+			job.resumeTime = resume
+		}
+		job.ApplyStats(nil, now)
 		result = append(result, job)
 	}
 	return result, nil
 }
 
+// actionResponse is restoreResponse for actions. A native SYSTEM or TIMED_OUT
+// error was received, but the action may already run: it is indeterminate.
+func actionResponse(raw []byte, requestErr error, class string) (json.RawMessage, error) {
+	decoded, err := restoreResponse(raw, requestErr, class)
+	if err != nil && engineTimedOut(raw, class) {
+		return nil, errors.Join(ErrIndeterminate, ErrRejected)
+	}
+	return decoded, err
+}
+
+func engineTimedOut(raw []byte, class string) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	_, ids, err := responseEnvelope(raw, class)
+	if err != nil {
+		return false
+	}
+	for _, id := range ids {
+		if id == "SYSTEM" || id == "TIMED_OUT" {
+			return true
+		}
+	}
+	return false
+}
+
+// ControlRestore sends START, STOP or REMOVE once. The engine sends no direct
+// reply to ControlRestoreMessage; the HTTP answer is the next queue broadcast,
+// which proves nothing about this action. So a lost or timed-out answer does
+// not block the class: the outcome is checked with a fresh queue read
+// (startRestore sets resumeTime 0, stopRestore Long.MAX_VALUE, REMOVE drops
+// or cancels the job). The action is never sent again.
 func (c *Client) ControlRestore(ctx context.Context, id, action string) error {
 	ctx = c.operationContext(ctx)
 	if !validID(id) {
@@ -415,70 +603,51 @@ func (c *Client) ControlRestore(ctx context.Context, id, action string) error {
 	default:
 		return ErrInvalidRequest
 	}
-	ctx, cancel := context.WithTimeout(c.generationContext(ctx), 10*time.Second)
+	ctx = c.generationContext(ctx)
+	send, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	body, _ := json.Marshal(map[string]string{"restoreId": id, "action": action})
-	raw, err := c.legacyRequest(ctx, "RestoreJobsResponseMessage", "PUT", "/v0/ControlRestore", body, true, true)
-	raw, err = restoreResponse(raw, err, "RestoreJobsResponseMessage")
-	if err != nil {
+	const class = "RestoreJobsResponseMessage"
+	raw, requestErr := c.legacyAction(send, class, "PUT", "/v0/ControlRestore", body, false)
+	if requestErr == nil {
+		var reply struct {
+			Jobs *[]json.RawMessage `json:"jobs"`
+		}
+		decoded, err := restoreResponse(raw, nil, class)
+		if err != nil {
+			return err
+		}
+		if json.Unmarshal(decoded, &reply) != nil || reply.Jobs == nil {
+			return ErrIndeterminate
+		}
+		return nil
+	}
+	lost := errors.Is(requestErr, ErrIndeterminate) && !receivedRejection(raw, class)
+	if !lost && !engineTimedOut(raw, class) {
+		_, err := actionResponse(raw, requestErr, class)
 		return err
 	}
-	var reply struct {
-		Jobs *[]json.RawMessage `json:"jobs"`
+	verify, done := context.WithTimeout(ctx, 10*time.Second)
+	defer done()
+	jobs, err := c.RestoreJobs(verify)
+	if err != nil {
+		return errors.Join(ErrIndeterminate, err)
 	}
-	if json.Unmarshal(raw, &reply) != nil || reply.Jobs == nil {
-		return ErrIndeterminate
+	var job *RestoreJob
+	for i := range jobs {
+		if jobs[i].ID == id {
+			job = &jobs[i]
+		}
 	}
-	return nil
-}
-
-// Native legacy catchers correlate by response class rather than request ID.
-// Keep same-class calls serial, retaining uncertainty after a lost response.
-// A new JVM generation cannot retain the old JVM's response catchers/workers.
-type legacyLane struct {
-	gate      chan struct{}
-	uncertain bool
-}
-
-func (c *Client) legacyRequest(ctx context.Context, class, method, path string, body []byte, auth, mutation bool) ([]byte, error) {
-	c.mu.Lock()
-	if ctx.Value(generationKey{}) == nil && c.lifetime != nil {
-		ctx = context.WithValue(ctx, generationKey{}, c.lifetime.Value(generationKey{}))
+	switch {
+	case action == "REMOVE" && (job == nil || job.Canceled):
+		return nil
+	case action == "STOP" && job != nil && job.resumeTime == math.MaxInt64:
+		return nil
+	case action == "START" && job != nil && job.resumeTime == 0 && !job.Completed:
+		return nil
 	}
-	if c.legacy == nil {
-		c.legacy = make(map[string]*legacyLane)
-	}
-	lane := c.legacy[class]
-	if lane == nil {
-		lane = &legacyLane{gate: make(chan struct{}, 1)}
-		c.legacy[class] = lane
-	}
-	c.mu.Unlock()
-	select {
-	case lane.gate <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ErrUnavailable
-	}
-	defer func() { <-lane.gate }()
-	if !c.currentGeneration(ctx) || ctx.Err() != nil {
-		return nil, ErrUnavailable
-	}
-	c.mu.RLock()
-	uncertain := lane.uncertain
-	c.mu.RUnlock()
-	if uncertain {
-		return nil, ErrLegacyPending
-	}
-	raw, err := c.request(ctx, method, path, body, auth, mutation)
-	if err == nil && !c.currentGeneration(ctx) {
-		err = ErrUnavailable
-	}
-	if err != nil && !errors.Is(err, ErrUnauthorized) && !errors.Is(err, ErrNotDispatched) {
-		c.mu.Lock()
-		lane.uncertain = true
-		c.mu.Unlock()
-	}
-	return raw, err
+	return ErrIndeterminate
 }
 
 func statusQuery(home string) []byte {

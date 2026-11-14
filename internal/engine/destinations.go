@@ -27,11 +27,12 @@ func (c *Client) saveDestination(ctx context.Context, id string, destination any
 		return ErrInvalidRequest
 	}
 	raw, err := c.legacyRequest(ctx, "SaveDestinationResponseMessage", "PUT", "/v0/SaveDestination", payload, true, true)
-	if err != nil {
+	// A received answer with native error ids is a rejection: nothing was
+	// saved and the class stays usable. Anything else stays indeterminate.
+	if _, err := actionResponse(raw, err, "SaveDestinationResponseMessage"); err != nil {
 		return err
 	}
-	_, ids, decodeErr := responseEnvelope(raw, "SaveDestinationResponseMessage")
-	if decodeErr != nil || len(ids) > 0 {
+	if _, _, decodeErr := responseEnvelope(raw, "SaveDestinationResponseMessage"); decodeErr != nil {
 		return ErrIndeterminate
 	}
 	return nil

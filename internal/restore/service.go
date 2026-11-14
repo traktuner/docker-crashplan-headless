@@ -69,6 +69,60 @@ type Service struct {
 	store   *statefile.Store
 	user    string
 	records []record
+	statsMu sync.Mutex
+	stats   map[string]observedStats
+}
+
+// observedStats is the newest live statistics event of one restore job.
+type observedStats struct {
+	stats engine.RestoreStats
+	at    time.Time
+}
+
+// statsFresh bounds how long a statistics event describes a job. The engine
+// sends them every few seconds while a restore runs.
+const statsFresh = 2 * time.Minute
+
+// ResetRestoreStats forgets live statistics when an engine generation begins.
+func (s *Service) ResetRestoreStats() {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	s.stats = nil
+}
+
+// ObserveRestoreStats keeps the newest RestoreStatsMessage or
+// RestoreStoppedMessage statistics per job. Anything malformed is ignored.
+func (s *Service) ObserveRestoreStats(raw []byte) {
+	stats, ok := engine.ParseRestoreStats(raw)
+	if !ok {
+		return
+	}
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	if s.stats == nil {
+		s.stats = make(map[string]observedStats)
+	}
+	now := time.Now()
+	for id, old := range s.stats {
+		if now.Sub(old.at) > statsFresh {
+			delete(s.stats, id)
+		}
+	}
+	if len(s.stats) >= 1024 {
+		return
+	}
+	s.stats[stats.RestoreID] = observedStats{stats: stats, at: now}
+}
+
+func (s *Service) liveStats(id string, now time.Time) *engine.RestoreStats {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	observed, ok := s.stats[id]
+	if !ok || now.Sub(observed.at) > statsFresh {
+		return nil
+	}
+	stats := observed.stats
+	return &stats
 }
 
 func NewService(native *engine.Client, roots *Destinations, store *statefile.Store, user string) (*Service, error) {
@@ -92,7 +146,7 @@ func NewService(native *engine.Client, roots *Destinations, store *statefile.Sto
 			return nil, ErrJournal
 		}
 		switch r.State {
-		case "accepted", "rejected", "indeterminate":
+		case "accepted", "rejected", "indeterminate", "acknowledged":
 		default:
 			return nil, ErrJournal
 		}
@@ -210,7 +264,7 @@ func (s *Service) Start(ctx context.Context, generation string, req StartRequest
 	defer func() {
 		if result == nil {
 			op.State = "accepted"
-		} else if errors.Is(result, engine.ErrUnauthorized) || errors.Is(result, engine.ErrNotDispatched) || errors.Is(result, ErrDestination) {
+		} else if definiteRejection(result) {
 			op.State = "rejected"
 		}
 		s.mu.Lock()
@@ -247,6 +301,75 @@ func (s *Service) Start(ctx context.Context, generation string, req StartRequest
 	op.RestoreID = id
 	return op, nil
 }
+
+// definiteRejection reports a failure after which no native restore job can
+// exist: nothing was sent, or the engine answered with a parsed rejection
+// (no space, read-only, missing path, permission check, archive key). An
+// indeterminate outcome never counts, even when it carries a rejection.
+func definiteRejection(err error) bool {
+	if errors.Is(err, engine.ErrIndeterminate) {
+		return false
+	}
+	for _, definite := range []error{engine.ErrUnauthorized, engine.ErrNotDispatched, ErrDestination, ErrMarker, engine.ErrLegacyPending, engine.ErrInvalidRequest, engine.ErrRejected, engine.ErrRestoreSpace, engine.ErrRestoreReadOnly, engine.ErrRestorePath, engine.ErrRestoreMarker, engine.ErrArchiveKey} {
+		if errors.Is(err, definite) {
+			return true
+		}
+	}
+	return false
+}
+
+// AcknowledgeOperation records that the user reviewed an indeterminate
+// submission. It stays a permanent replay barrier but can then be archived.
+func (s *Service) AcknowledgeOperation(id string) (Operation, error) {
+	if !requestID.MatchString(id) {
+		return Operation{}, engine.ErrInvalidRequest
+	}
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, r := range s.records {
+		if r.RequestID != id {
+			continue
+		}
+		if r.State != "indeterminate" {
+			return Operation{}, engine.ErrInvalidRequest
+		}
+		previous := s.records[i].State
+		s.records[i].State = "acknowledged"
+		if err := s.save(); err != nil {
+			s.records[i].State = previous
+			return Operation{}, err
+		}
+		op := s.records[i].Operation
+		op.Children = slices.Clone(s.records[i].Children)
+		return op, nil
+	}
+	return Operation{}, engine.ErrInvalidRequest
+}
+
+// ClearCompleted removes completed jobs from the native restore queue, as the
+// desktop app's "Clear all" does. Restored files are not touched. Each job is
+// removed once; the first failure ends the batch, later jobs stay, and the
+// failure is returned together with the number already removed.
+func (s *Service) ClearCompleted(ctx context.Context) (int, error) {
+	jobs, err := s.native.RestoreJobs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, job := range jobs {
+		if !job.Completed || job.Canceled {
+			continue
+		}
+		if err := s.native.ControlRestore(ctx, job.ID, "REMOVE"); err != nil {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
+}
+
 func (s *Service) admissible(job engine.RestoreJob) bool {
 	if job.UsesHelper() && job.UserName() != s.user {
 		return false
@@ -283,7 +406,9 @@ func (s *Service) Jobs(ctx context.Context) ([]Job, error) {
 	}
 	s.mu.Unlock()
 	out := make([]Job, 0, len(jobs))
+	now := time.Now()
 	for _, job := range jobs {
+		job.ApplyStats(s.liveStats(job.ID, now), now)
 		path, known := owned[job.ID]
 		out = append(out, Job{RestoreJob: job, Path: job.Destination(), Imported: !known || path != job.Destination(), Admissible: s.admissible(job)})
 	}

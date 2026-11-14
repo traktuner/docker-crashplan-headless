@@ -82,3 +82,33 @@ func (c *Client) MaintainArchive(ctx context.Context, source, target string) err
 	}
 	return c.namedCommand(ctx, "backup.maint", "backup.maint true "+source+" "+target)
 }
+
+// Reconnect is the stock destination row's "reconnect" link: the engine
+// command "reconnect" (Command {command:"reconnect"}, backup_set_destination.js).
+// The stock app sends it without a GUID, which reconnects every destination;
+// the route names one destination, which must be a current backup target.
+func (c *Client) Reconnect(ctx context.Context, target string) error {
+	ctx = c.operationContext(ctx)
+	if !validID(target) {
+		return ErrInvalidRequest
+	}
+	devices, err := c.Devices(ctx)
+	if err != nil {
+		return errors.Join(ErrNotDispatched, err)
+	}
+	known := false
+	for _, device := range devices {
+		if device.ID == target && device.Target && !device.Self && !device.Deleted {
+			known = true
+		}
+	}
+	if !known {
+		return ErrInvalidRequest
+	}
+	if err := c.namedCommand(ctx, "reconnect", "reconnect"); err != nil {
+		return err
+	}
+	// The connection state changes after the command; do not serve the old list.
+	c.InvalidateTargets()
+	return nil
+}

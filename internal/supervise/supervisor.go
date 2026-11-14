@@ -29,6 +29,13 @@ type Options struct {
 	Sources        SourceGate
 	Logger         *slog.Logger
 	SourceInterval time.Duration
+	// SourceTimeout bounds one source check (default 20 s). A check that
+	// takes longer counts as an ambiguous failure; it is not started again
+	// while it still runs.
+	SourceTimeout time.Duration
+	// SourceFailures is how many consecutive ambiguous I/O failures stop a
+	// running engine (default 3). Definite states stop it at once.
+	SourceFailures int
 	StopGrace      time.Duration
 	Generations    Generations
 	Failures       <-chan error
@@ -41,11 +48,16 @@ type State struct {
 	ExitCode   *int   `json:"exitCode,omitempty"`
 }
 type Supervisor struct {
-	mu      sync.RWMutex
-	options Options
-	state   State
-	restart chan uint64
+	mu       sync.RWMutex
+	options  Options
+	state    State
+	restart  chan uint64
+	checkMu  sync.Mutex
+	inflight chan error
 }
+
+// errSourceTimeout is an ambiguous failure: the check did not return in time.
+var errSourceTimeout = sources.ErrNotReady
 
 func New(options Options) (*Supervisor, error) {
 	if len(options.Command) == 0 || options.Sources == nil {
@@ -57,13 +69,55 @@ func New(options Options) (*Supervisor, error) {
 	if options.StopGrace == 0 {
 		options.StopGrace = 120 * time.Second
 	}
-	if options.SourceInterval < time.Millisecond || options.StopGrace < time.Millisecond {
+	if options.SourceTimeout == 0 {
+		options.SourceTimeout = 20 * time.Second
+	}
+	if options.SourceFailures == 0 {
+		options.SourceFailures = 3
+	}
+	if options.SourceInterval < time.Millisecond || options.StopGrace < time.Millisecond || options.SourceTimeout < time.Millisecond || options.SourceFailures < 1 {
 		return nil, ErrConfiguration
 	}
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
 	return &Supervisor{options: options, state: State{Status: "waiting_source"}, restart: make(chan uint64, 1)}, nil
+}
+
+// Check runs one source check with the configured deadline. At most one
+// check runs at a time: after a timeout the hung call keeps its goroutine and
+// the next Check waits for that same call instead of starting another. The
+// API's scan path uses this too, so a hung NFS call cannot block a worker.
+func (s *Supervisor) Check() error {
+	s.checkMu.Lock()
+	if s.inflight == nil {
+		result := make(chan error, 1)
+		s.inflight = result
+		gate := s.options.Sources
+		go func() { result <- gate.Check() }()
+	}
+	result := s.inflight
+	s.checkMu.Unlock()
+	timer := time.NewTimer(s.options.SourceTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-result:
+		s.checkMu.Lock()
+		if s.inflight == result {
+			s.inflight = nil
+		}
+		s.checkMu.Unlock()
+		return err
+	case <-timer.C:
+		s.options.Logger.Warn("source_check_timeout", "timeout_s", int(s.options.SourceTimeout/time.Second))
+		return errSourceTimeout
+	}
+}
+
+// ambiguousSource reports a failure that is not a definite source state.
+func ambiguousSource(err error) bool {
+	var reason sources.Reason
+	return !errors.As(err, &reason)
 }
 
 func (s *Supervisor) Snapshot() State { s.mu.RLock(); defer s.mu.RUnlock(); return s.state }
@@ -116,7 +170,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	defer ticker.Stop()
 	for {
 		lastSourceReason := ""
-		for sourceErr := s.options.Sources.Check(); sourceErr != nil; sourceErr = s.options.Sources.Check() {
+		for sourceErr := s.Check(); sourceErr != nil; sourceErr = s.Check() {
 			reason := sourceReason(sourceErr)
 			if reason != lastSourceReason {
 				if changed, ok := s.options.Sources.(interface{ Changed() string }); ok && reason == "SOURCE_CHANGED" {
@@ -170,6 +224,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		exit := make(chan error, 1)
 		go func() { exit <- cmd.Wait() }()
 		restarting := false
+		ambiguous := 0
 	inner:
 		for {
 			select {
@@ -187,13 +242,29 @@ func (s *Supervisor) Run(ctx context.Context) error {
 				}
 				break inner
 			case <-ticker.C:
-				if s.options.Sources.Check() != nil {
-					s.options.Logger.Error("source_not_ready")
-					if err := s.stop(cmd, exit); err != nil {
-						return err
+				sourceErr := s.Check()
+				if sourceErr == nil {
+					if ambiguous > 0 {
+						s.options.Logger.Info("source_check_recovered")
 					}
-					break inner
+					ambiguous = 0
+					continue
 				}
+				if ambiguousSource(sourceErr) {
+					// An I/O error or timeout on a still-mounted source: stop
+					// only after consecutive failures. Unmounts and changes are
+					// definite and stop at once.
+					ambiguous++
+					if ambiguous < s.options.SourceFailures {
+						s.options.Logger.Warn("source_check_failed", "attempt", ambiguous, "limit", s.options.SourceFailures)
+						continue
+					}
+				}
+				s.options.Logger.Error("source_not_ready", "reason", sourceReason(sourceErr))
+				if err := s.stop(cmd, exit); err != nil {
+					return err
+				}
+				break inner
 			case failure := <-s.options.Failures:
 				if failure == nil {
 					continue

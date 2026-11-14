@@ -57,7 +57,6 @@ type Client struct {
 	accountTimeout  time.Duration
 	archiveKeys     map[string]string
 	searchMu        sync.Mutex
-	searchUncertain bool
 	progressMu      sync.Mutex
 	progressAt      time.Time
 	progressRev     uint64
@@ -133,7 +132,6 @@ func (c *Client) BindGeneration(ctx context.Context) context.Context {
 	c.lifetime = ctx
 	c.migration = nil
 	c.archiveKeys = nil
-	c.searchUncertain = false
 	c.legacy = nil
 	return ctx
 }

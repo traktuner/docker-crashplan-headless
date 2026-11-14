@@ -97,7 +97,8 @@ Native selection statistics are counts and byte totals, not archived-file conten
 The private native transport can match some results by message class.
 After a dispatched timeout, a barrier prevents a delayed result from being attributed to a new request.
 V3 queries retain their original identity in the native request registry.
-Ordered WebSocket termination is required before a count/search stream is released.
+Ordered WebSocket termination releases a count/search stream. A native rejection ends it at once.
+A count whose request failed is released after 45 silent seconds; a search without a terminal event blocks the next search for 10 minutes. Results must match the complete query, so a late result is never attributed to another query.
 A restart clears native workers; it does not prove cloud-side work completed.
 
 ## Headless operation
