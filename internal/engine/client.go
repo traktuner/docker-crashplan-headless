@@ -39,29 +39,29 @@ func (*nativeStatusError) Error() string { return "NATIVE_HTTP_STATUS" }
 // Client owns a native HTTP session. It is independent of the web login session.
 // Native tokens stay inside this process and are cleared after a native 401.
 type Client struct {
-	userHome        string // engine user's home; empty means /root
-	base            string
-	http            *http.Client
-	mu              sync.RWMutex
-	token           string
-	revision        uint64
-	loginMu         sync.Mutex
-	eventsMu        sync.Mutex
-	events          *Events
-	legacy          map[string]*legacyLane
-	contentsMu      sync.Mutex
-	contents        *contentsTracker
-	store           *statefile.Store
-	lifetime        context.Context
-	migration       *MigrationState
-	accountTimeout  time.Duration
-	archiveKeys     map[string]string
-	searchMu        sync.Mutex
-	progressMu      sync.Mutex
-	progressAt      time.Time
-	progressRev     uint64
-	progressCache   []DestinationProgress
-	progressErr     error
+	userHome       string // engine user's home; empty means /root
+	base           string
+	http           *http.Client
+	mu             sync.RWMutex
+	token          string
+	revision       uint64
+	loginMu        sync.Mutex
+	eventsMu       sync.Mutex
+	events         *Events
+	legacy         map[string]*legacyLane
+	contentsMu     sync.Mutex
+	contents       *contentsTracker
+	store          *statefile.Store
+	lifetime       context.Context
+	migration      *MigrationState
+	accountTimeout time.Duration
+	archiveKeys    map[string]string
+	searchMu       sync.Mutex
+	progressMu     sync.Mutex
+	progressAt     time.Time
+	progressRev    uint64
+	progressCache  []DestinationProgress
+	progressErr    error
 }
 
 func (c *Client) String() string   { return "engine.Client{session:redacted}" }
