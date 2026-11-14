@@ -8,7 +8,7 @@ import type { LoginInfo, LoginResult } from '../../shared/api'
 import { text, ErrorNotice, Loading, PageTitle } from '../../shared/components'
 import { AccountDevices } from './AccountDevices'
 
-export function Account() {
+export function Account({ firstSignIn = false }: { firstSignIn?: boolean }) {
   const client = useQueryClient()
   const setup = useQuery({
     queryKey: ['account-setup'],
@@ -96,6 +96,23 @@ export function Account() {
         title="CrashPlan account"
         subtitle="Connect this device to your account."
       />
+      {firstSignIn && (
+        <div className="notice" role="status">
+          <div>
+            <p>
+              <strong>Sign in to CrashPlan to continue.</strong>{' '}
+              {setup.data?.authenticated
+                ? 'CrashPlan is still signed in on this device and backups keep running. Enter your CrashPlan password once so this interface can manage it.'
+                : 'This device has no active CrashPlan session yet, for example after the first start.'}
+            </p>
+            <p>
+              Your settings, backup sets and device identity in <code>/config</code>{' '}
+              are kept. Use the same CrashPlan account; the device keeps its
+              archive. The other pages open after sign-in.
+            </p>
+          </div>
+        </div>
+      )}
       <section className="card form-card">
         <ErrorNotice error={setup.error} />
         {setup.isPending ? (

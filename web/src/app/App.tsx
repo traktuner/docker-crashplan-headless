@@ -1,4 +1,5 @@
 import { useState, useEffect, useSyncExternalStore, lazy, Suspense } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { AppFrame } from './AppFrame'
 import { pageFromHash } from './navigation'
 import type { Page } from './navigation'
@@ -59,6 +60,21 @@ export function App() {
     )
     window.scrollTo({ top: 0 })
   }
+  // The control needs its own CrashPlan session. The engine can still report an
+  // authorized account (for example after moving an existing /config); backups
+  // then keep running, but every control needs this session first.
+  const native = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: () => api.capabilities<{ nativeSession?: boolean }>(),
+    enabled: !!session && !engineChanged,
+    refetchInterval: 15000,
+  })
+  const signedIn =
+    typeof native.data?.nativeSession === 'boolean'
+      ? native.data.nativeSession
+      : undefined
+  const needsSignIn = signedIn === false
+  const shown: Page = needsSignIn && page !== 'system' ? 'account' : page
   useEffect(() => {
     const pop = () => setPage(pageFromHash(location.hash))
     window.addEventListener('popstate', pop)
@@ -157,23 +173,28 @@ export function App() {
       </>
     )
   return (
-    <AppFrame page={page} navigate={navigate} logout={() => void logout()}>
+    <AppFrame
+      page={shown}
+      navigate={navigate}
+      logout={() => void logout()}
+      signedIn={signedIn}
+    >
       <ErrorNotice error={sessionError} />
       <Suspense fallback={<Loading />}>
-        {page === 'overview' ? (
+        {shown === 'overview' ? (
           <Overview navigate={navigate} />
-        ) : page === 'activity' ? (
+        ) : shown === 'activity' ? (
           <BackupActivity />
-        ) : page === 'sets' ? (
+        ) : shown === 'sets' ? (
           <BackupSets />
-        ) : page === 'restore' ? (
+        ) : shown === 'restore' ? (
           <Restore />
-        ) : page === 'settings' ? (
+        ) : shown === 'settings' ? (
           <Settings />
-        ) : page === 'security' ? (
+        ) : shown === 'security' ? (
           <Security />
-        ) : page === 'account' ? (
-          <Account />
+        ) : shown === 'account' ? (
+          <Account firstSignIn={needsSignIn} />
         ) : (
           <System />
         )}

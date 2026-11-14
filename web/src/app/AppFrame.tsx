@@ -19,6 +19,7 @@ import {
 import { findPages, pages } from './navigation'
 import type { Page } from './navigation'
 import { ProjectNotice } from '../shared/ProjectNotice'
+import { ThemeSwitch } from '../shared/ThemeSwitch'
 const icons = {
   overview: LayoutDashboard,
   sets: FolderClosed,
@@ -33,13 +34,17 @@ export function AppFrame({
   page,
   navigate,
   logout,
+  signedIn,
   children,
 }: {
   page: Page
   navigate: (page: Page) => void
   logout: () => void
+  signedIn?: boolean
   children: ReactNode
 }) {
+  // Pages that work before the CrashPlan account is signed in.
+  const locked = (id: Page) => signedIn === false && id !== 'account' && id !== 'system'
   const [open, setOpen] = useState(false),
     [search, setSearch] = useState('')
   const command = useRef<HTMLDialogElement>(null)
@@ -175,6 +180,8 @@ export function AppFrame({
                       key={item.id}
                       className={page === item.id ? 'active' : ''}
                       aria-current={page === item.id ? 'page' : undefined}
+                      disabled={locked(item.id)}
+                      title={locked(item.id) ? 'Sign in to CrashPlan first' : undefined}
                       onClick={() => go(item.id)}
                     >
                       <Icon size={18} strokeWidth={1.8} />
@@ -187,9 +194,22 @@ export function AppFrame({
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <button className="signout-button" onClick={logout}>
+          {signedIn !== undefined && (
+            <button
+              className={'account-state ' + (signedIn ? 'is-signed-in' : 'is-signed-out')}
+              onClick={() => go('account')}
+            >
+              <span aria-hidden="true" />
+              {signedIn ? 'CrashPlan signed in' : 'CrashPlan not signed in'}
+            </button>
+          )}
+          <button
+            className="signout-button"
+            onClick={logout}
+            title="Ends this browser session. CrashPlan and backups keep running."
+          >
             <LogOut size={17} />
-            Sign out
+            Leave web interface
           </button>
         </div>
       </aside>
@@ -210,6 +230,7 @@ export function AppFrame({
             <strong>{current.label}</strong>
           </div>
           <div className="topbar-actions">
+            <ThemeSwitch />
             <button
               className="navigation-search"
               aria-label="Find a page"
@@ -219,7 +240,7 @@ export function AppFrame({
               <span>Find a page</span>
               <kbd>⌘ K</kbd>
             </button>
-            {page !== 'restore' && (
+            {page !== 'restore' && signedIn !== false && (
               <button
                 className="topbar-restore secondary"
                 onClick={() => go('restore')}
@@ -258,7 +279,7 @@ export function AppFrame({
           {findPages(search).map((item) => {
             const Icon = icons[item.id]
             return (
-              <button key={item.id} onClick={() => go(item.id)}>
+              <button key={item.id} disabled={locked(item.id)} onClick={() => go(item.id)}>
                 <Icon size={18} />
                 <span>{item.label}</span>
                 <ChevronRight size={16} />

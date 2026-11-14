@@ -5,6 +5,7 @@ import { api } from '../../shared/api'
 import type { Session } from '../../shared/api'
 import { ErrorNotice } from '../../shared/components'
 import { ProjectNotice } from '../../shared/ProjectNotice'
+import { ThemeSwitch } from '../../shared/ThemeSwitch'
 
 export function WebLogin({
   onSession,
@@ -20,12 +21,18 @@ export function WebLogin({
   })
   return (
     <main className="login">
+      <div className="login-theme">
+        <ThemeSwitch />
+      </div>
       <div className="brand-mark">
         <ShieldCheck size={30} />
       </div>
       <p className="eyebrow">CRASHPLAN</p>
-      <h1>Sign in</h1>
-      <p className="muted">Sign in to manage this backup service.</p>
+      <h1>Web interface</h1>
+      <p className="muted">
+        Enter the web interface password of this container. This is not your
+        CrashPlan account password; the account sign-in follows if needed.
+      </p>
       <form
         onSubmit={(e) => {
           e.preventDefault()

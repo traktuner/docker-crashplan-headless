@@ -30,7 +30,10 @@ the log entry `configuration_item_refused` names the item.
 Before replacement, stop the existing engine and take a consistent configuration backup.
 Preserve its source mappings and saved heap limit.
 An ordinary replacement keeps the device identity; inheritance is for deliberately replacing a device.
-Native sign-in can still be required when saved automatic login is ineligible.
+After moving an existing `/config`, for example from jlesage/docker-crashplan-pro, CrashPlan keeps backing up, but this container
+has no session of its own yet: sign in once with the same account. The log entry `native_sign_in_required` says so at start;
+the web interface opens on the sign-in page, and `cphctl login <username> <server>` reads the password from stdin.
+The session is then saved privately in `/config/cph` and restored at each start.
 
 Mount your data at `/storage`, or several folders below it.
 Without `CPH_SOURCE_ROOTS`, every mount at or below `/storage` is a source; the log entry `sources_detected` lists them.

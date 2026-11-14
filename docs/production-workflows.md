@@ -8,6 +8,8 @@ Real account/provider, full-scan completion and cloud restore acceptance remain 
 
 Account controls support password login, registration, browser SSO/MFA, device inheritance and replacement.
 Web sign-in protects the local interface; CrashPlan sign-in authorizes native account operations.
+Without a CrashPlan session the web interface shows only the account and system pages; the sidebar shows the account state.
+"Leave web interface" ends the browser session only; CrashPlan stays signed in and keeps backing up.
 Private registration discovery remains bound to the account operation.
 Browser SSO presents the authority's canonical account name and requires explicit confirmation.
 This confirms the returned identity; the native callback does not identify its originating browser attempt.
