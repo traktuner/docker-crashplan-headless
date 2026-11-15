@@ -181,10 +181,20 @@ export function App() {
         <Loading />
       </main>
     )
+  if (!session && sessionError)
+    // Not a plain "sign in first": the interface could not reach the server, so
+    // a sign-in form (which may not exist in this setup) would not help.
+    return (
+      <main className="login-page">
+        <ErrorNotice error={sessionError} />
+        <button className="btn" onClick={() => window.location.reload()}>
+          Try again
+        </button>
+      </main>
+    )
   if (!session)
     return (
       <>
-        <ErrorNotice error={sessionError} />
         <Suspense fallback={<Loading />}>
           <WebLogin
             onSession={(value) => {

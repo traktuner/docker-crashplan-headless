@@ -98,3 +98,19 @@ func TestAuthModeNoneNeedsExplicitAckAndNoPassword(t *testing.T) {
 		t.Fatal("default mode must still require a password")
 	}
 }
+
+func TestAuthModeNoneIgnoresLeftoverPasswordSettings(t *testing.T) {
+	env := map[string]string{"CPH_SOURCE_ROOTS": `["/data"]`, "CPH_MODE": "web", "CPH_PUBLIC_ORIGINS": `["https://backup.fixture.invalid"]`, "CPH_AUTH_MODE": "none", "CPH_AUTH_NONE_ACK": "I_UNDERSTAND",
+		"CPH_WEB_PASSWORD": "fixture-web-password-12345", "CPH_WEB_PASSWORD_FILE": "/does/not/exist"}
+	c, err := Load(func(key string) string { return env[key] })
+	if err != nil || c.WebPassword != "" {
+		t.Fatal("leftover password settings blocked or leaked into auth none", err)
+	}
+}
+
+func TestHeadlessIgnoresAuthModeNone(t *testing.T) {
+	env := map[string]string{"CPH_SOURCE_ROOTS": `["/data"]`, "CPH_AUTH_MODE": "none"}
+	if _, err := Load(func(key string) string { return env[key] }); err != nil {
+		t.Fatal("headless mode refused an auth mode it does not use", err)
+	}
+}

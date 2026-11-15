@@ -185,7 +185,9 @@ func (s *Server) handler(local bool) http.Handler {
 			cookie.MaxAge = -1
 			http.SetCookie(w, cookie)
 		}
-		writeData(w, 200, map[string]bool{"signedOut": true})
+		_, signIn := s.sessions.(auth.PasswordLogin)
+		// Without a web sign-in there is nothing to end; say so instead of claiming success.
+		writeData(w, 200, map[string]bool{"signedOut": signIn || local})
 		return nil
 	})
 	handle("GET /api/v1/state", "status", false, func(w http.ResponseWriter, r *http.Request, _ auth.Session) error {
