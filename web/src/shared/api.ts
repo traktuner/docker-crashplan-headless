@@ -664,6 +664,10 @@ export class API {
     return session
   }
   async signIn(username: string, password: string): Promise<Session> {
+    // A page that stayed open across a container restart signs in again with the
+    // old engine context in memory. The sign-in page holds no account forms, so
+    // the new context is simply adopted instead of reported as a changed account.
+    this.engineContext = ''
     const session = await this.request<Session>('/api/v1/session', 'POST', {
       username,
       password,
