@@ -148,31 +148,35 @@ func Load(get func(string) string) (Config, error) {
 			return Config{}, invalid("CPH_PUBLIC_ORIGINS")
 		}
 	}
-	c.WebPassword = get("CPH_WEB_PASSWORD")
-	if path := get("CPH_WEB_PASSWORD_FILE"); path != "" {
-		if c.WebPassword != "" {
-			return Config{}, invalid("CPH_WEB_PASSWORD_FILE")
-		}
-		fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
-		if err != nil {
-			return Config{}, invalid("CPH_WEB_PASSWORD_FILE")
-		}
-		file := os.NewFile(uintptr(fd), "web-password")
-		info, err := file.Stat()
-		if err != nil || !info.Mode().IsRegular() {
-			file.Close()
-			return Config{}, invalid("CPH_WEB_PASSWORD_FILE")
-		}
-		raw, readErr := io.ReadAll(io.LimitReader(file, 65537))
-		closeErr := file.Close()
-		if readErr != nil || closeErr != nil || len(raw) > 65536 {
-			return Config{}, invalid("CPH_WEB_PASSWORD_FILE")
-		}
-		c.WebPassword = strings.TrimSuffix(strings.TrimSuffix(string(raw), "\n"), "\r")
-	}
 	c.AuthMode = get("CPH_AUTH_MODE")
 	if c.AuthMode == "" {
 		c.AuthMode = "password"
+	}
+	// In mode none the password settings are not read at all, so a leftover
+	// CPH_WEB_PASSWORD(_FILE) cannot stop the container from starting.
+	if c.AuthMode == "password" {
+		c.WebPassword = get("CPH_WEB_PASSWORD")
+		if path := get("CPH_WEB_PASSWORD_FILE"); path != "" {
+			if c.WebPassword != "" {
+				return Config{}, invalid("CPH_WEB_PASSWORD_FILE")
+			}
+			fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+			if err != nil {
+				return Config{}, invalid("CPH_WEB_PASSWORD_FILE")
+			}
+			file := os.NewFile(uintptr(fd), "web-password")
+			info, err := file.Stat()
+			if err != nil || !info.Mode().IsRegular() {
+				file.Close()
+				return Config{}, invalid("CPH_WEB_PASSWORD_FILE")
+			}
+			raw, readErr := io.ReadAll(io.LimitReader(file, 65537))
+			closeErr := file.Close()
+			if readErr != nil || closeErr != nil || len(raw) > 65536 {
+				return Config{}, invalid("CPH_WEB_PASSWORD_FILE")
+			}
+			c.WebPassword = strings.TrimSuffix(strings.TrimSuffix(string(raw), "\n"), "\r")
+		}
 	}
 	switch c.AuthMode {
 	case "password":

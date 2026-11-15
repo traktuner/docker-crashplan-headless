@@ -111,6 +111,19 @@ func (o *Open) Authorize(r *http.Request, mutation bool) (Session, error) {
 	if err := o.CheckOrigin(r); err != nil {
 		return Session{}, err
 	}
+	// Without a sign-in cookie nothing else tells apart a request that another
+	// web page makes in the operator's browser. Browsers label those requests,
+	// so refuse them for reads too; same-origin use and typed addresses pass.
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "", "same-origin", "none":
+	default:
+		return Session{}, ErrCSRF
+	}
+	if origin := r.Header.Get("Origin"); origin != "" {
+		if err := o.checkRequestOrigin(r); err != nil {
+			return Session{}, err
+		}
+	}
 	session := Session{ID: "open", CSRF: o.csrf, Mode: ModeNone}
 	if mutation {
 		if err := o.checkRequestOrigin(r); err != nil {

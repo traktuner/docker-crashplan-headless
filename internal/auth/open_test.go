@@ -72,3 +72,34 @@ var (
 	_ Authenticator = (*Manager)(nil)
 	_ PasswordLogin = (*Manager)(nil)
 )
+
+func TestOpenRefusesCrossSiteReadsLikeTheCookieDid(t *testing.T) {
+	o := openFixture(t)
+	read := func(fetchSite, origin string) error {
+		r := httptest.NewRequest("GET", "https://backup.fixture.invalid/api/v1/events", nil)
+		if fetchSite != "" {
+			r.Header.Set("Sec-Fetch-Site", fetchSite)
+		}
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		_, err := o.Authorize(r, false)
+		return err
+	}
+	for _, ok := range []string{"", "same-origin", "none"} {
+		if err := read(ok, ""); err != nil {
+			t.Fatalf("Sec-Fetch-Site %q refused: %v", ok, err)
+		}
+	}
+	if err := read("same-origin", "https://backup.fixture.invalid"); err != nil {
+		t.Fatal("same-origin read with its own Origin refused", err)
+	}
+	for _, bad := range []string{"cross-site", "same-site"} {
+		if err := read(bad, ""); !errors.Is(err, ErrCSRF) {
+			t.Fatalf("Sec-Fetch-Site %q accepted: %v", bad, err)
+		}
+	}
+	if err := read("", "https://evil.invalid"); !errors.Is(err, ErrCSRF) {
+		t.Fatal("read with a foreign Origin accepted", err)
+	}
+}

@@ -71,7 +71,7 @@ These settings apply only with `CPH_MODE=web`.
 | Variable | Required | Default | Meaning |
 | --- | --- | --- | --- |
 | `CPH_PUBLIC_ORIGINS` | **yes, in web mode** | none | JSON array of the exact browser addresses, for example `["http://192.168.1.10:8080"]` or `["https://backup.example.org"]`. Up to eight. |
-| `CPH_WEB_PASSWORD_FILE` or `CPH_WEB_PASSWORD` | **yes, in web mode** (one of them) | none | Web password, at least 12 characters. The file variant reads a mounted file; prefer it. A final newline is ignored. |
+| `CPH_WEB_PASSWORD_FILE` or `CPH_WEB_PASSWORD` | **yes, in web mode with `CPH_AUTH_MODE=password`** (one of them) | none | Web password, at least 12 characters. The file variant reads a mounted file; prefer it. A final newline is ignored. |
 | `CPH_AUTH_MODE` | no | `password` | How the web interface authenticates. `password`: sign-in with the web user and password above (default). `none`: no sign-in, the page opens directly; read the warning below. More modes can be added without changing the others. |
 | `CPH_AUTH_NONE_ACK` | **yes, when `CPH_AUTH_MODE=none`** | none | Must be exactly `I_UNDERSTAND`. Without it the container refuses to start. |
 | `CPH_WEB_USERNAME` | no | `admin` | Web user name. Separate from the CrashPlan account. |
@@ -83,7 +83,9 @@ These settings apply only with `CPH_MODE=web`.
 
 `CPH_AUTH_MODE=none` removes the web sign-in. Use it only when something in front of the container already decides who may reach it, for example a VPN, a private network or a reverse proxy with its own sign-in. Everyone who can reach the address can then restore, change and delete backups.
 
-The password variables are not needed and are ignored. The browser address check against `CPH_PUBLIC_ORIGINS` and the CSRF protection stay active, so other web sites cannot drive the interface through your browser. The start log carries a `web_auth_disabled` warning. The CrashPlan account sign-in on the Account page is separate and still applies.
+The password variables are not needed and are not read in this mode. The browser address check against `CPH_PUBLIC_ORIGINS` and the CSRF protection stay active, so other web sites cannot drive the interface through your browser. The start log carries a `web_auth_disabled` warning. The CrashPlan account sign-in on the Account page is separate and still applies.
+
+Do not publish the container port on the network when a proxy in front is what protects it: bind it to the proxy network or to loopback, otherwise anyone on the network can bypass the proxy and reach the interface directly.
 
 The browser address must match one of `CPH_PUBLIC_ORIGINS` exactly, including scheme and port; otherwise requests are refused with `PUBLIC_ORIGIN_MISMATCH`.
 Behind a reverse proxy, use the public HTTPS address and pass the original `Host` header.
