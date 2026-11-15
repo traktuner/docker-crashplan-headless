@@ -122,6 +122,8 @@ export function generateArchiveKey(): string {
 export type NativeObject = Record<string, unknown>
 export interface Session {
   csrf: string
+  /** "none" when the container runs without web sign-in; absent for the password sign-in. */
+  mode?: string
 }
 export interface LoginInfo {
   username: string

@@ -44,14 +44,14 @@ type Options struct {
 type Server struct {
 	contextID string
 	native    *engine.Client
-	sessions  *auth.Manager
+	sessions  auth.Authenticator
 	options   Options
 	ssoMu     sync.Mutex
 	sso       map[string]*ssoOperation
 	events    *notifications
 }
 
-func New(native *engine.Client, sessions *auth.Manager, options Options) *Server {
+func New(native *engine.Client, sessions auth.Authenticator, options Options) *Server {
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
@@ -123,14 +123,14 @@ func (s *Server) handler(local bool) http.Handler {
 			s.options.Logger.Log(r.Context(), level, "request", "operation", name, "outcome", code, "duration_ms", time.Since(started).Milliseconds())
 		})
 	}
-	if !local && s.sessions != nil {
+	if login, ok := s.sessions.(auth.PasswordLogin); ok && !local {
 		mux.HandleFunc("POST /api/v1/session", func(w http.ResponseWriter, r *http.Request) {
 			started := time.Now()
 			outcome := "REJECTED"
 			defer func() {
 				s.options.Logger.Info("request", "operation", "web.login", "outcome", outcome, "duration_ms", time.Since(started).Milliseconds())
 			}()
-			if err := s.sessions.CheckRequestOrigin(r); err != nil {
+			if err := login.CheckRequestOrigin(r); err != nil {
 				writeError(w, err)
 				return
 			}
@@ -146,7 +146,7 @@ func (s *Server) handler(local bool) http.Handler {
 				writeError(w, err)
 				return
 			}
-			release, err := s.sessions.AdmitLogin()
+			release, err := login.AdmitLogin()
 			if err != nil {
 				outcome = errorCode(err)
 				writeError(w, err)
@@ -159,7 +159,7 @@ func (s *Server) handler(local bool) http.Handler {
 				writeError(w, auth.ErrUnauthorized)
 				return
 			}
-			session, err := s.sessions.LoginFrom(r.Context(), peer, in.Username, in.Password)
+			session, err := login.LoginFrom(r.Context(), peer, in.Username, in.Password)
 			if errors.Is(err, auth.ErrUnauthorized) {
 				// Say plainly that the entered credentials were wrong; this is the
 				// web password of the container, not the CrashPlan account.
@@ -172,16 +172,16 @@ func (s *Server) handler(local bool) http.Handler {
 				return
 			}
 			outcome = "OK"
-			http.SetCookie(w, s.sessions.CookieFor(session, r))
+			http.SetCookie(w, login.CookieFor(session, r))
 			writeData(w, 200, session)
 		})
 	}
 	handle("GET /api/v1/session", "session", false, func(w http.ResponseWriter, r *http.Request, p auth.Session) error { writeData(w, 200, p); return nil })
 	handle("GET /api/v1/session/status", "session.status", false, func(w http.ResponseWriter, r *http.Request, p auth.Session) error { writeData(w, 200, p); return nil })
 	handle("DELETE /api/v1/session", "logout", true, func(w http.ResponseWriter, r *http.Request, p auth.Session) error {
-		if !local {
-			s.sessions.Logout(p.ID)
-			cookie := s.sessions.CookieFor(auth.Session{}, r)
+		if login, ok := s.sessions.(auth.PasswordLogin); ok && !local {
+			login.Logout(p.ID)
+			cookie := login.CookieFor(auth.Session{}, r)
 			cookie.MaxAge = -1
 			http.SetCookie(w, cookie)
 		}

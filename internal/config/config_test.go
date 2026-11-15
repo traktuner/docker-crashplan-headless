@@ -73,3 +73,28 @@ func TestInvalidValueNamesItsVariable(t *testing.T) {
 		t.Fatal("invalid variable not named safely", err)
 	}
 }
+
+func TestAuthModeNoneNeedsExplicitAckAndNoPassword(t *testing.T) {
+	env := map[string]string{"CPH_SOURCE_ROOTS": `["/data"]`, "CPH_MODE": "web", "CPH_PUBLIC_ORIGINS": `["https://backup.fixture.invalid"]`, "CPH_AUTH_MODE": "none"}
+	load := func() (Config, error) { return Load(func(key string) string { return env[key] }) }
+	if _, err := load(); err == nil || !strings.Contains(err.Error(), "CPH_AUTH_NONE_ACK") {
+		t.Fatal("auth none accepted without acknowledgement", err)
+	}
+	env["CPH_AUTH_NONE_ACK"] = "yes"
+	if _, err := load(); err == nil {
+		t.Fatal("auth none accepted with a sloppy acknowledgement")
+	}
+	env["CPH_AUTH_NONE_ACK"] = "I_UNDERSTAND"
+	c, err := load()
+	if err != nil || c.AuthMode != "none" || c.WebPassword != "" {
+		t.Fatal("auth none refused or kept a password", err)
+	}
+	env["CPH_AUTH_MODE"] = "ldap"
+	if _, err := load(); err == nil || !strings.Contains(err.Error(), "CPH_AUTH_MODE") {
+		t.Fatal("unknown auth mode accepted", err)
+	}
+	delete(env, "CPH_AUTH_MODE")
+	if _, err := load(); err == nil {
+		t.Fatal("default mode must still require a password")
+	}
+}

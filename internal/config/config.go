@@ -35,13 +35,15 @@ var readMountInfo = func() ([]byte, error) { return os.ReadFile("/proc/self/moun
 
 type Config struct {
 	Mode, Listen, Socket, StateDir, Launch, WebUsername, WebPassword, TLSCert, TLSKey string
-	PublicOrigins, SourceRoots, RestoreRoots                                          []string
-	SourceSentinel, SourcePolicy, LogFormat                                           string
-	LogLevel                                                                          slog.Level
-	SourceRootsDetected                                                               bool
-	SourceRootsSkipped                                                                []string
-	StopGrace                                                                         time.Duration
-	TrustedProxies                                                                    []netip.Prefix
+	// AuthMode selects the web authenticator: "password" (default) or "none".
+	AuthMode                                 string
+	PublicOrigins, SourceRoots, RestoreRoots []string
+	SourceSentinel, SourcePolicy, LogFormat  string
+	LogLevel                                 slog.Level
+	SourceRootsDetected                      bool
+	SourceRootsSkipped                       []string
+	StopGrace                                time.Duration
+	TrustedProxies                           []netip.Prefix
 }
 
 func (c Config) String() string   { return "config.Config{private}" }
@@ -168,8 +170,24 @@ func Load(get func(string) string) (Config, error) {
 		}
 		c.WebPassword = strings.TrimSuffix(strings.TrimSuffix(string(raw), "\n"), "\r")
 	}
-	if len(c.WebPassword) < 12 || len(c.WebPassword) > 65536 || len(c.WebUsername) > 256 {
-		return Config{}, invalid("CPH_WEB_PASSWORD")
+	c.AuthMode = get("CPH_AUTH_MODE")
+	if c.AuthMode == "" {
+		c.AuthMode = "password"
+	}
+	switch c.AuthMode {
+	case "password":
+		if len(c.WebPassword) < 12 || len(c.WebPassword) > 65536 || len(c.WebUsername) > 256 {
+			return Config{}, invalid("CPH_WEB_PASSWORD")
+		}
+	case "none":
+		// No sign-in at all: anyone who can reach the web address controls the
+		// backups. It must be chosen on purpose, and then no password is kept.
+		if get("CPH_AUTH_NONE_ACK") != "I_UNDERSTAND" {
+			return Config{}, invalid("CPH_AUTH_NONE_ACK")
+		}
+		c.WebPassword = ""
+	default:
+		return Config{}, invalid("CPH_AUTH_MODE")
 	}
 	return c, nil
 }
