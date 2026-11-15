@@ -405,3 +405,26 @@ test('a pending native response asks to try again, not to restart the engine', a
     server.close()
   }
 })
+
+test('signing in again after a server restart adopts the new engine context', async () => {
+  let nonce = 'first'
+  const server = createServer((request, response) => {
+    response.setHeader('Content-Type', 'application/json')
+    response.setHeader('X-CPH-Engine-Context', nonce + ':1')
+    response.end('{"data":{"csrf":"token"}}')
+  }).listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  try {
+    const address = server.address()
+    assert(address && typeof address !== 'string')
+    const api = new API(`http://127.0.0.1:${address.port}`)
+    await api.session()
+    nonce = 'second' // the container restarted while this page stayed open
+    await api.signIn('admin', 'a-long-enough-password')
+    assert.equal(api.contextChanged(), false)
+    await api.session(true)
+    assert.equal(api.contextChanged(), false)
+  } finally {
+    server.close()
+  }
+})
