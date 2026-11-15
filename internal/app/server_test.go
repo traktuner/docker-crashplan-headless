@@ -277,7 +277,7 @@ func TestWrongWebCredentialsSayWhatFailed(t *testing.T) {
 func TestLoginBodyIsReadBeforeAdmission(t *testing.T) {
 	server, _, _ := newFixture(t)
 	for i := 0; i < 8; i++ {
-		release, err := server.sessions.AdmitLogin()
+		release, err := server.sessions.(auth.PasswordLogin).AdmitLogin()
 		if err != nil {
 			t.Fatal(err)
 		}

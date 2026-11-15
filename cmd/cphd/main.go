@@ -207,9 +207,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	var sessions *auth.Manager
+	var sessions auth.Authenticator
 	if cfg.Mode == "web" {
-		sessions, err = auth.NewOrigins(cfg.WebUsername, cfg.WebPassword, cfg.PublicOrigins, 30*time.Minute)
+		switch cfg.AuthMode {
+		case auth.ModeNone:
+			sessions, err = auth.NewOpen(cfg.PublicOrigins)
+			logger.Warn("web_auth_disabled", "hint", "CPH_AUTH_MODE=none: anyone who can reach the web address can use the backups; protect access in front of the container")
+		default:
+			sessions, err = auth.NewOrigins(cfg.WebUsername, cfg.WebPassword, cfg.PublicOrigins, 30*time.Minute)
+		}
 		if err != nil {
 			return config.ErrConfiguration
 		}

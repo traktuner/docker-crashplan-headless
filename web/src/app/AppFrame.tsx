@@ -34,12 +34,15 @@ export function AppFrame({
   page,
   navigate,
   logout,
+  canSignOut = true,
   signedIn,
   children,
 }: {
   page: Page
   navigate: (page: Page) => void
   logout: () => void
+  /** False when the container runs without web sign-in. */
+  canSignOut?: boolean
   signedIn?: boolean
   children: ReactNode
 }) {
@@ -215,14 +218,16 @@ export function AppFrame({
               {signedIn ? 'Signed in to CrashPlan' : 'Not signed in to CrashPlan'}
             </button>
           )}
-          <button
-            className="account-chip"
-            onClick={logout}
-            title="Ends this browser session. CrashPlan and backups keep running."
-          >
-            <LogOut size={15} />
-            Sign out of web interface
-          </button>
+          {canSignOut && (
+            <button
+              className="account-chip"
+              onClick={logout}
+              title="Ends this browser session. CrashPlan and backups keep running."
+            >
+              <LogOut size={15} />
+              Sign out of web interface
+            </button>
+          )}
         </div>
       </aside>
       <div className="app-body" inert={mobile && open}>

@@ -200,6 +200,7 @@ export function App() {
       page={shown}
       navigate={navigate}
       logout={() => void logout()}
+      canSignOut={session.mode !== 'none'}
       signedIn={signedIn}
     >
       <ErrorNotice error={sessionError} />

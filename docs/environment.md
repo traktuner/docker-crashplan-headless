@@ -72,10 +72,18 @@ These settings apply only with `CPH_MODE=web`.
 | --- | --- | --- | --- |
 | `CPH_PUBLIC_ORIGINS` | **yes, in web mode** | none | JSON array of the exact browser addresses, for example `["http://192.168.1.10:8080"]` or `["https://backup.example.org"]`. Up to eight. |
 | `CPH_WEB_PASSWORD_FILE` or `CPH_WEB_PASSWORD` | **yes, in web mode** (one of them) | none | Web password, at least 12 characters. The file variant reads a mounted file; prefer it. A final newline is ignored. |
+| `CPH_AUTH_MODE` | no | `password` | How the web interface authenticates. `password`: sign-in with the web user and password above (default). `none`: no sign-in, the page opens directly; read the warning below. More modes can be added without changing the others. |
+| `CPH_AUTH_NONE_ACK` | **yes, when `CPH_AUTH_MODE=none`** | none | Must be exactly `I_UNDERSTAND`. Without it the container refuses to start. |
 | `CPH_WEB_USERNAME` | no | `admin` | Web user name. Separate from the CrashPlan account. |
 | `CPH_LISTEN` | no | `:8080` | Listen address inside the container. |
 | `CPH_TLS_CERT_FILE`, `CPH_TLS_KEY_FILE` | no | none | PEM certificate and key for direct HTTPS. Set both or neither. |
 | `CPH_TRUSTED_PROXIES` | no | none | JSON array of reverse-proxy CIDRs whose forwarded client address is trusted. |
+
+### Running without web sign-in
+
+`CPH_AUTH_MODE=none` removes the web sign-in. Use it only when something in front of the container already decides who may reach it, for example a VPN, a private network or a reverse proxy with its own sign-in. Everyone who can reach the address can then restore, change and delete backups.
+
+The password variables are not needed and are ignored. The browser address check against `CPH_PUBLIC_ORIGINS` and the CSRF protection stay active, so other web sites cannot drive the interface through your browser. The start log carries a `web_auth_disabled` warning. The CrashPlan account sign-in on the Account page is separate and still applies.
 
 The browser address must match one of `CPH_PUBLIC_ORIGINS` exactly, including scheme and port; otherwise requests are refused with `PUBLIC_ORIGIN_MISMATCH`.
 Behind a reverse proxy, use the public HTTPS address and pass the original `Host` header.

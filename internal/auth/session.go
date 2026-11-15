@@ -29,8 +29,10 @@ var (
 const cookieName = "cph_session"
 
 type Session struct {
-	ID       string `json:"-"`
-	CSRF     string `json:"csrf"`
+	ID   string `json:"-"`
+	CSRF string `json:"csrf"`
+	// Mode tells the web app which sign-in applies; "none" has no sign-out.
+	Mode     string `json:"mode,omitempty"`
 	expires  time.Time
 	created  time.Time
 	absolute time.Time
