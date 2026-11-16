@@ -219,7 +219,7 @@ func run() error {
 			sessions, err = auth.NewPersistent(cfg.WebUsername, cfg.WebPassword, cfg.PublicOrigins, 30*time.Minute, store, func(err error) {
 				switch {
 				case errors.Is(err, auth.ErrRevocationNotSaved):
-					logger.Warn("web_session_revocation_not_saved", "hint", "a signed-out or replaced \"keep me signed in\" session may return after the next restart; the save is retried every minute, or delete /config/cph/web-sessions.json to end them all", "error", err.Error())
+					logger.Warn("web_session_revocation_not_saved", "hint", "a signed-out or replaced \"keep me signed in\" session may return after the next restart; the save is retried every minute; to end them for certain, stop the container, delete /config/cph/web-sessions.json and start it again", "error", err.Error())
 				case errors.Is(err, auth.ErrNotRestored):
 					logger.Warn("web_sessions_not_restored", "hint", "the saved \"keep me signed in\" sessions could not be read at this start; those browsers must sign in again", "error", err.Error())
 				default:

@@ -83,19 +83,19 @@ These settings apply only with `CPH_MODE=web`.
 
 Each browser has its own sign-in; several devices can be signed in at the same time (up to 32).
 
-- **Normal sign-in:** ends after 30 minutes without use, or 12 hours after signing in, or earlier when the browser is closed. It is kept in memory only, so a container restart ends it.
-- **"Keep me signed in" ticked:** the browser stays signed in until it has been unused for 30 days, and at most 90 days in total, also across container restarts. After a restart the unused time can count up to 6 hours longer, because the file is updated at most every 6 hours.
-- **Ends them:** "Sign out" ends that browser's sign-in for good. Changing `CPH_WEB_USERNAME` or the password ends every sign-in, including the kept ones, and changing it back does not bring them back.
+- **Normal sign-in:** ends after 30 minutes without use or 12 hours after signing in, whichever comes first. It is kept in memory only, so a container restart ends it. Its cookie is a browser-session cookie.
+- **"Keep me signed in" ticked:** the browser stays signed in until it has been unused for 30 days, and at most 90 days in total, also across container restarts. After a restart the unused time can count up to 6 hours longer, because a device's new expiry is saved only when the saved one is 6 hours behind.
+- **Ends them:** "Sign out" ends that browser's sign-in for good. Changing `CPH_WEB_USERNAME` or the password ends every kept sign-in at the next start, and changing it back later does not bring them back. The one exception: if the container cannot write `/config/cph` at that start, the old file stays until saving works, and it is retried every minute.
 
-Kept sign-ins are stored in `/config/cph/web-sessions.json` (private, mode 0600). The file holds only a keyed hash of each cookie, never a cookie or the password, so it cannot be used to sign in. It also holds a random salt and a check value that ties it to the current user name and password. Whoever can read the file can therefore test password guesses against it, at the same cost as against the sign-in itself, which needs `/config` access that is worth far more than this file. Delete `web-sessions.json` to end every kept sign-in at once.
+Kept sign-ins are stored in `/config/cph/web-sessions.json` (private, mode 0600). For each session it holds a keyed hash of the cookie, the session's CSRF token and its times. A cookie or the password is never in it, and the hashes and CSRF tokens cannot be used to sign in. The file also holds a random salt and a check value that ties it to the current user name and password. **Whoever gets a copy of this file** (for example from a backup of `/config`) **can test password guesses against the check value offline**, without the sign-in's rate limit, at the cost of 600,000 PBKDF2 rounds per guess. Use a long random web password (`CPH_WEB_PASSWORD_FILE`) and keep copies of `/config` private. To end every kept sign-in for certain, stop the container, delete `web-sessions.json` and start it again; deleting it while the container runs has no lasting effect, because the sessions in memory are written back.
 
-If `/config/cph` cannot be written, the start log or the log shows one of these (never fatal):
+If `/config/cph` cannot be written or read, the log shows one of these events. None of them stops the container or a sign-in:
 
 | Event | Meaning |
 | --- | --- |
 | `web_sessions_not_saved` | Kept sign-ins will not survive the next restart until saving works again. Retried every minute. |
-| `web_session_revocation_not_saved` | A sign-out or replaced session could not be saved and may return after a restart. Retried every minute; delete the file to be sure. |
-| `web_sessions_not_restored` | The file could not be read at start; those browsers must sign in again. |
+| `web_session_revocation_not_saved` | A sign-out or replaced session could not be saved and may return after a restart if the container restarts before a retry succeeds. Retried every minute. |
+| `web_sessions_not_restored` | The file could not be read at start (or is from an older format); those browsers must sign in again. An unusable file is replaced at once, so this appears once. |
 
 Tick the box only on your own devices: whoever holds the browser can use the interface until the sign-in ends.
 

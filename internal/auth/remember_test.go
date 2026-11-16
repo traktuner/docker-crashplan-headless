@@ -32,6 +32,27 @@ func (s *memoryStore) Read(name string) ([]byte, error) {
 	return append([]byte(nil), raw...), nil
 }
 
+func (s *memoryStore) setFailing(v bool) { s.mu.Lock(); s.failing = v; s.mu.Unlock() }
+func (s *memoryStore) writeCount() int   { s.mu.Lock(); defer s.mu.Unlock(); return s.writes }
+func (s *memoryStore) file(name string) []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.files[name]...)
+}
+
+// problems collects what the manager reports, from any goroutine.
+type problems struct {
+	mu   sync.Mutex
+	list []error
+}
+
+func (p *problems) add(err error) { p.mu.Lock(); p.list = append(p.list, err); p.mu.Unlock() }
+func (p *problems) all() []error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]error(nil), p.list...)
+}
+
 func (s *memoryStore) Write(name string, raw []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -263,9 +284,8 @@ func TestChangingThePasswordBackDoesNotRestoreOldSessions(t *testing.T) {
 	if _, err := changed.Authorize(readRequest(changed, old), false); !errors.Is(err, ErrUnauthorized) {
 		t.Fatal("session survived a password change")
 	}
-	if _, err := changed.LoginRemember(context.Background(), "192.0.2.1", rememberUser, "another-fixture-password-1", true); err != nil {
-		t.Fatal(err)
-	}
+	// Nobody signs in under the new password: only the start-up rewrite can
+	// have ended the old sessions in the file.
 	now = now.Add(24 * time.Hour)
 	back := persistentManager(t, store, rememberPassword, &now, nil)
 	if _, err := back.Authorize(readRequest(back, old), false); !errors.Is(err, ErrUnauthorized) {
@@ -288,31 +308,34 @@ func TestEachInstallationHasItsOwnSalt(t *testing.T) {
 	}
 }
 
-// A sign-out that could not be saved is retried, and the failure says what it is.
-func TestFailedSignOutSaveIsRetriedAndReportedAsRevocation(t *testing.T) {
+// A sign-out that could not be saved is retried by a timer, and the failure
+// says what it is. Nobody has to use the interface for the retry to happen.
+func TestFailedSignOutSaveIsRetriedByTimerAndReportedAsRevocation(t *testing.T) {
 	now := time.Now()
 	store := &memoryStore{}
-	var reported []error
-	m := persistentManager(t, store, rememberPassword, &now, func(err error) { reported = append(reported, err) })
+	var reported problems
+	m := persistentManager(t, store, rememberPassword, &now, reported.add)
+	m.retryAfter = 20 * time.Millisecond
 	revoked, _ := m.LoginRemember(context.Background(), "192.0.2.1", rememberUser, rememberPassword, true)
 	other, _ := m.LoginRemember(context.Background(), "192.0.2.2", rememberUser, rememberPassword, true)
 
-	store.failing = true
+	store.setFailing(true)
 	m.Logout(revoked.ID)
-	if len(reported) != 1 || !errors.Is(reported[0], ErrRevocationNotSaved) {
-		t.Fatalf("an unsaved sign-out must be reported as such: %v", reported)
+	if got := reported.all(); len(got) < 1 || !errors.Is(got[0], ErrRevocationNotSaved) {
+		t.Fatalf("an unsaved sign-out must be reported as such: %v", got)
 	}
-	// Requests inside the minute do not hammer the store.
-	now = now.Add(10 * time.Second)
-	writes := store.writes
-	if _, err := m.Authorize(readRequest(m, other), false); err != nil || store.writes != writes || len(reported) != 1 {
-		t.Fatal("retry came too early", err)
+	// While the store is down, requests do not write.
+	writes := store.writeCount()
+	if _, err := m.Authorize(readRequest(m, other), false); err != nil || store.writeCount() != writes {
+		t.Fatal("a request wrote while the save was failing", err)
 	}
-	// The store works again: the next request after a minute saves the sign-out.
-	store.failing = false
-	now = now.Add(time.Minute)
-	if _, err := m.Authorize(readRequest(m, other), false); err != nil {
-		t.Fatal(err)
+	store.setFailing(false)
+	deadline := time.Now().Add(5 * time.Second)
+	for store.writeCount() == writes && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if store.writeCount() == writes {
+		t.Fatal("the failed save was never retried")
 	}
 	restarted := persistentManager(t, store, rememberPassword, &now, nil)
 	if _, err := restarted.Authorize(readRequest(restarted, revoked), false); !errors.Is(err, ErrUnauthorized) {
@@ -320,6 +343,51 @@ func TestFailedSignOutSaveIsRetriedAndReportedAsRevocation(t *testing.T) {
 	}
 	if _, err := restarted.Authorize(readRequest(restarted, other), false); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// restore() holds a saved session to the 30 idle days even when the file says more.
+func TestSavedIdleTimeIsClampedToThirtyDays(t *testing.T) {
+	now := time.Now()
+	store := &memoryStore{}
+	m := persistentManager(t, store, rememberPassword, &now, nil)
+	kept, _ := m.LoginRemember(context.Background(), "192.0.2.1", rememberUser, rememberPassword, true)
+	var file savedSessions
+	if err := json.Unmarshal(store.file(persistFile), &file); err != nil {
+		t.Fatal(err)
+	}
+	file.Sessions[0].Expires = now.Add(80 * 24 * time.Hour).Unix() // idle end far beyond 30 days
+	raw, _ := json.Marshal(file)
+	store.files[persistFile] = raw
+
+	day1 := now.Add(24 * time.Hour)
+	restarted := persistentManager(t, store, rememberPassword, &day1, nil)
+	day32 := now.Add(32 * 24 * time.Hour)
+	restarted.now = func() time.Time { return day32 }
+	r := readRequest(restarted, kept)
+	if _, err := restarted.AuthorizePassive(r); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("an idle end beyond 30 days from the restart was believed")
+	}
+}
+
+// Another device signing in must not hold back saving this device's slide.
+func TestSlideOfOneDeviceIsSavedEvenWhenAnotherDeviceSaved(t *testing.T) {
+	now := time.Now()
+	store := &memoryStore{}
+	m := persistentManager(t, store, rememberPassword, &now, nil)
+	a, _ := m.LoginRemember(context.Background(), "192.0.2.1", rememberUser, rememberPassword, true)
+	now = now.Add(25 * 24 * time.Hour)
+	if _, err := m.LoginRemember(context.Background(), "192.0.2.2", rememberUser, rememberPassword, true); err != nil { // saves the file
+		t.Fatal(err)
+	}
+	now = now.Add(time.Hour)
+	if _, err := m.Authorize(readRequest(m, a), false); err != nil { // A is used: 6 days idle only
+		t.Fatal(err)
+	}
+	now = now.Add(6 * 24 * time.Hour) // day 31.04: a restart
+	restarted := persistentManager(t, store, rememberPassword, &now, nil)
+	if _, err := restarted.Authorize(readRequest(restarted, a), false); err != nil {
+		t.Fatal("device A was signed out after only 6 idle days", err)
 	}
 }
 

@@ -44,7 +44,8 @@ const (
 	// A remembered session slides over 30 idle days and ends after 90 days.
 	rememberIdle     = 30 * 24 * time.Hour
 	rememberAbsolute = 90 * 24 * time.Hour
-	// Sliding a remembered session forward is written to disk at most this often.
+	// Sliding a remembered session forward is written to disk when the saved
+	// expiry is this far behind.
 	persistEvery = 6 * time.Hour
 	persistFile  = "web-sessions.json"
 	maxSessions  = 32
@@ -60,6 +61,8 @@ type Session struct {
 	absolute time.Time
 	// remember marks a "keep me signed in" session; only these are saved.
 	remember bool
+	// saved is the expiry that the file holds for this session.
+	saved time.Time
 }
 
 // Store keeps the remembered sessions private across restarts. statefile.Store
@@ -114,17 +117,19 @@ type Manager struct {
 	sidKey      []byte
 	store       Store
 	onSaveError func(error)
-	persistMu   sync.Mutex
 	// salt and check are written to the file; see savedSessions.
 	sidSalt []byte
 	check   string
-	// persistedAt is the last successful save. After a failed save, dirty stays
-	// set and the next sign-in, sign-out or request after retryAt tries again;
-	// pendingRevocation says the failed save was about removing a session.
-	persistedAt       time.Time
+	// saving is true while one goroutine writes the file; others only set
+	// again, and the writer goes round once more. After a failed save, dirty
+	// stays set and a timer tries again; pendingRevocation says that a removed
+	// session is not yet gone from the file.
+	saving            bool
+	again             bool
 	dirty             bool
-	retryAt           time.Time
 	pendingRevocation bool
+	retryTimer        *time.Timer
+	retryAfter        time.Duration
 }
 
 func (m *Manager) String() string { return "auth.Manager{redacted}" }
@@ -167,7 +172,7 @@ func newManager(username, password, publicOrigin string, ttl time.Duration) (*Ma
 	if _, err := rand.Read(sidKey); err != nil {
 		return nil, ErrConfiguration
 	}
-	return &Manager{username: sha256.Sum256([]byte(username)), salt: salt, key: key, sidKey: sidKey, scheme: strings.SplitN(origin, ":", 2)[0], ttl: ttl, now: time.Now, sessions: make(map[string]Session), buckets: make(map[string]attemptBucket), hashing: make(chan struct{}, 2), admissions: make(chan struct{}, 8)}, nil
+	return &Manager{username: sha256.Sum256([]byte(username)), salt: salt, key: key, sidKey: sidKey, scheme: strings.SplitN(origin, ":", 2)[0], ttl: ttl, now: time.Now, sessions: make(map[string]Session), buckets: make(map[string]attemptBucket), hashing: make(chan struct{}, 2), admissions: make(chan struct{}, 8), retryAfter: time.Minute}, nil
 }
 
 // sid is the key under which a session is kept; the cookie value is a secret
@@ -237,7 +242,7 @@ func newPersistent(username, password string, origins []string, ttl time.Duratio
 	m.store = store
 	m.onSaveError = onSaveError
 	var saved savedSessions
-	haveFile := false
+	haveFile, unusable := false, false
 	raw, readErr := store.Read(persistFile)
 	switch {
 	case errors.Is(readErr, os.ErrNotExist):
@@ -252,6 +257,7 @@ func newPersistent(username, password string, origins []string, ttl time.Duratio
 		if !haveFile {
 			m.report(fmt.Errorf("%w: %w", ErrNotRestored, ErrConfiguration))
 			saved = savedSessions{}
+			unusable = true
 		}
 	}
 	// Each installation has its own random salt, so guesses cannot be shared.
@@ -271,6 +277,10 @@ func newPersistent(username, password string, origins []string, ttl time.Duratio
 	check.Write([]byte("cph-web-session-check"))
 	m.check = base64.RawURLEncoding.EncodeToString(check.Sum(nil))
 	if !haveFile {
+		if unusable {
+			// Replace the unusable file so that it is not reported at every start.
+			m.save(false)
+		}
 		return m, nil
 	}
 	if subtle.ConstantTimeCompare([]byte(saved.Check), []byte(m.check)) == 1 {
@@ -317,55 +327,84 @@ func (m *Manager) restore(items []savedSession) {
 		if len(item.Key) != 43 || len(item.CSRF) < 32 || len(item.CSRF) > 128 || !now.Before(expires) || !now.Before(absolute) {
 			continue
 		}
-		m.sessions[item.Key] = Session{CSRF: item.CSRF, remember: true, created: created, expires: expires, absolute: absolute}
+		m.sessions[item.Key] = Session{CSRF: item.CSRF, remember: true, created: created, expires: expires, absolute: absolute, saved: expires}
 	}
 }
 
-// save writes the remembered sessions. It takes a fresh snapshot under the
-// lock and writes outside it, one writer at a time, so the file always ends
-// with the newest state. revocation says that a session was removed, which a
-// failed save must not hide: the removed session would come back at the next
-// restart.
+// save writes the remembered sessions. revocation says that a session was
+// removed, which a failed save must not hide: the removed session would come
+// back at the next restart. One goroutine writes at a time; a call that arrives
+// meanwhile makes it write once more, so the file ends with the newest state and
+// requests never queue up behind a slow disk. A failed save is retried by a timer.
 func (m *Manager) save(revocation bool) {
 	if m.store == nil {
 		return
 	}
-	m.persistMu.Lock()
-	defer m.persistMu.Unlock()
 	m.mu.Lock()
-	now := m.now()
-	saved := savedSessions{Version: savedVersion, Salt: base64.RawURLEncoding.EncodeToString(m.sidSalt), Check: m.check}
-	for key, s := range m.sessions {
-		if s.remember && now.Before(s.expires) && now.Before(s.absolute) {
-			saved.Sessions = append(saved.Sessions, savedSession{Key: key, CSRF: s.CSRF, Created: s.created.Unix(), Expires: s.expires.Unix(), Absolute: s.absolute.Unix()})
-		}
+	m.pendingRevocation = m.pendingRevocation || revocation
+	if m.saving {
+		m.again = true
+		m.mu.Unlock()
+		return
 	}
+	m.saving = true
 	m.mu.Unlock()
-	raw, err := json.Marshal(saved)
-	if err == nil {
-		err = m.store.Write(persistFile, raw)
-	}
-	m.mu.Lock()
-	kind := ErrNotSaved
-	if err != nil {
-		m.pendingRevocation = m.pendingRevocation || revocation
-		if m.pendingRevocation {
-			kind = ErrRevocationNotSaved
+	for {
+		m.mu.Lock()
+		now := m.now()
+		m.again = false
+		saved := savedSessions{Version: savedVersion, Salt: base64.RawURLEncoding.EncodeToString(m.sidSalt), Check: m.check}
+		for key, s := range m.sessions {
+			if s.remember && now.Before(s.expires) && now.Before(s.absolute) {
+				saved.Sessions = append(saved.Sessions, savedSession{Key: key, CSRF: s.CSRF, Created: s.created.Unix(), Expires: s.expires.Unix(), Absolute: s.absolute.Unix()})
+			}
 		}
-		m.dirty = true
-		m.retryAt = m.now().Add(time.Minute)
-	} else {
-		m.dirty, m.pendingRevocation = false, false
-		m.persistedAt = now
-	}
-	m.mu.Unlock()
-	if err != nil {
-		m.report(fmt.Errorf("%w: %w", kind, err))
+		m.mu.Unlock()
+		raw, err := json.Marshal(saved)
+		if err == nil {
+			err = m.store.Write(persistFile, raw)
+		}
+		m.mu.Lock()
+		if err != nil {
+			kind := ErrNotSaved
+			if m.pendingRevocation {
+				kind = ErrRevocationNotSaved
+			}
+			m.dirty, m.saving = true, false
+			if m.retryTimer == nil {
+				m.retryTimer = time.AfterFunc(m.retryAfter, m.retry)
+			}
+			m.mu.Unlock()
+			m.report(fmt.Errorf("%w: %w", kind, err))
+			return
+		}
+		for _, item := range saved.Sessions {
+			if current, ok := m.sessions[item.Key]; ok {
+				current.saved = time.Unix(item.Expires, 0)
+				m.sessions[item.Key] = current
+			}
+		}
+		again := m.again
+		if !again {
+			m.dirty, m.pendingRevocation, m.saving = false, false, false
+		}
+		m.mu.Unlock()
+		if !again {
+			return
+		}
 	}
 }
 
-// retryDue says an earlier save failed and a minute has passed. Call with m.mu held.
-func (m *Manager) retryDue(now time.Time) bool { return m.dirty && !now.Before(m.retryAt) }
+// retry runs from the timer after a failed save.
+func (m *Manager) retry() {
+	m.mu.Lock()
+	m.retryTimer = nil
+	pending, revocation := m.dirty, m.pendingRevocation
+	m.mu.Unlock()
+	if pending {
+		m.save(revocation)
+	}
+}
 
 func (m *Manager) Login(username, password string) (Session, error) {
 	return m.LoginFrom(context.Background(), "local", username, password)
@@ -482,9 +521,8 @@ func (m *Manager) LoginRemember(ctx context.Context, peer, username, password st
 	session := Session{ID: id, CSRF: csrf, expires: now.Add(idle), created: now, absolute: now.Add(absolute), remember: remember}
 	m.sessions[m.sid(id)] = session
 	delete(m.buckets, peer)
-	retry := m.retryDue(now)
 	m.mu.Unlock()
-	if remember || removed || retry {
+	if remember || removed {
 		m.save(removed)
 	}
 	return session, nil
@@ -562,7 +600,7 @@ func (m *Manager) authorize(r *http.Request, mutation, touch bool) (Session, err
 	}
 	m.mu.Lock()
 	current, stillPresent := m.sessions[key]
-	saveNow, revocation := false, false
+	saveNow := false
 	if stillPresent && touch {
 		idle := m.ttl
 		if current.remember {
@@ -571,18 +609,16 @@ func (m *Manager) authorize(r *http.Request, mutation, touch bool) (Session, err
 		now := m.now()
 		current.expires = now.Add(idle)
 		m.sessions[key] = current
-		// Sliding a remembered session is saved now and then, not on every request.
-		// After a failed save, the next try waits for retryAt.
-		waiting := m.dirty && now.Before(m.retryAt)
-		saveNow = m.retryDue(now) || (current.remember && !waiting && now.Sub(m.persistedAt) >= persistEvery)
-		revocation = m.pendingRevocation
+		// Sliding a remembered session is saved when its saved expiry is far
+		// behind, not on every request. After a failed save the timer retries.
+		saveNow = current.remember && !m.dirty && current.expires.Sub(current.saved) >= persistEvery
 	}
 	m.mu.Unlock()
 	if !stillPresent {
 		return Session{}, ErrUnauthorized
 	}
 	if saveNow {
-		m.save(revocation)
+		m.save(false)
 	}
 	return session, nil
 }
