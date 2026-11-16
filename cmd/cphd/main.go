@@ -217,8 +217,16 @@ func run() error {
 			// "Keep me signed in" sessions are saved in the private state directory,
 			// so they survive a restart. A save problem is logged, never fatal.
 			sessions, err = auth.NewPersistent(cfg.WebUsername, cfg.WebPassword, cfg.PublicOrigins, 30*time.Minute, store, func(err error) {
-				logger.Warn("web_sessions_not_saved", "hint", "signed-in browsers that chose \"keep me signed in\" must sign in again after the next restart", "error", err.Error())
+				switch {
+				case errors.Is(err, auth.ErrRevocationNotSaved):
+					logger.Warn("web_session_revocation_not_saved", "hint", "a signed-out or replaced \"keep me signed in\" session may return after the next restart; the save is retried every minute, or delete /config/cph/web-sessions.json to end them all", "error", err.Error())
+				case errors.Is(err, auth.ErrNotRestored):
+					logger.Warn("web_sessions_not_restored", "hint", "the saved \"keep me signed in\" sessions could not be read at this start; those browsers must sign in again", "error", err.Error())
+				default:
+					logger.Warn("web_sessions_not_saved", "hint", "\"keep me signed in\" sessions will not survive the next restart until saving works again; it is retried every minute", "error", err.Error())
+				}
 			})
+
 		}
 		if err != nil {
 			return config.ErrConfiguration

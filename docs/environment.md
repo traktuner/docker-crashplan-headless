@@ -83,10 +83,19 @@ These settings apply only with `CPH_MODE=web`.
 
 Each browser has its own sign-in; several devices can be signed in at the same time (up to 32).
 
-- **Normal sign-in:** ends after 30 minutes without use, or 12 hours after signing in. It is kept in memory only, so a container restart ends it.
-- **"Keep me signed in" ticked:** the browser stays signed in for up to 30 days without use and at most 90 days in total, also across container restarts. It is stored in `/config/cph/web-sessions.json` as a keyed hash of the cookie, never the cookie or the password, so the file cannot be used to sign in.
-- **Ends them:** "Sign out" ends that browser's sign-in for good. Changing `CPH_WEB_USERNAME` or the password ends every sign-in, including the kept ones.
-- If `/config/cph` cannot be written, the start log shows `web_sessions_not_saved`; kept sign-ins then last only until the next restart.
+- **Normal sign-in:** ends after 30 minutes without use, or 12 hours after signing in, or earlier when the browser is closed. It is kept in memory only, so a container restart ends it.
+- **"Keep me signed in" ticked:** the browser stays signed in until it has been unused for 30 days, and at most 90 days in total, also across container restarts. After a restart the unused time can count up to 6 hours longer, because the file is updated at most every 6 hours.
+- **Ends them:** "Sign out" ends that browser's sign-in for good. Changing `CPH_WEB_USERNAME` or the password ends every sign-in, including the kept ones, and changing it back does not bring them back.
+
+Kept sign-ins are stored in `/config/cph/web-sessions.json` (private, mode 0600). The file holds only a keyed hash of each cookie, never a cookie or the password, so it cannot be used to sign in. It also holds a random salt and a check value that ties it to the current user name and password. Whoever can read the file can therefore test password guesses against it, at the same cost as against the sign-in itself, which needs `/config` access that is worth far more than this file. Delete `web-sessions.json` to end every kept sign-in at once.
+
+If `/config/cph` cannot be written, the start log or the log shows one of these (never fatal):
+
+| Event | Meaning |
+| --- | --- |
+| `web_sessions_not_saved` | Kept sign-ins will not survive the next restart until saving works again. Retried every minute. |
+| `web_session_revocation_not_saved` | A sign-out or replaced session could not be saved and may return after a restart. Retried every minute; delete the file to be sure. |
+| `web_sessions_not_restored` | The file could not be read at start; those browsers must sign in again. |
 
 Tick the box only on your own devices: whoever holds the browser can use the interface until the sign-in ends.
 

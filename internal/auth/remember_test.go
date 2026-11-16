@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -53,12 +54,13 @@ const (
 
 func persistentManager(t *testing.T, store Store, password string, clock *time.Time, report func(error)) *Manager {
 	t.Helper()
-	m, err := NewPersistent(rememberUser, password, []string{rememberOrigin}, 30*time.Minute, store, report)
+	now := time.Now
+	if clock != nil {
+		now = func() time.Time { return *clock }
+	}
+	m, err := newPersistent(rememberUser, password, []string{rememberOrigin}, 30*time.Minute, store, report, now)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if clock != nil {
-		m.now = func() time.Time { return *clock }
 	}
 	return m
 }
@@ -193,7 +195,7 @@ func TestExpiredAndBrokenSavedSessionsAreIgnored(t *testing.T) {
 	}
 
 	var reported []error
-	for _, garbage := range []string{"not json", `{"v":2,"s":[]}`, `{"v":1,"s":[{"k":"short","c":"x","t":1,"e":9999999999,"a":9999999999}]}`} {
+	for _, garbage := range []string{"not json", `{"v":1,"s":[]}`, `{"v":2,"n":"short","x":"","s":[]}`} {
 		broken := &memoryStore{files: map[string][]byte{persistFile: []byte(garbage)}}
 		failed := persistentManager(t, broken, rememberPassword, &now, func(err error) { reported = append(reported, err) })
 		if _, err := failed.Authorize(readRequest(failed, kept), false); !errors.Is(err, ErrUnauthorized) {
@@ -203,8 +205,130 @@ func TestExpiredAndBrokenSavedSessionsAreIgnored(t *testing.T) {
 			t.Fatal("broken saved sessions blocked sign-in", err)
 		}
 	}
-	if len(reported) != 2 {
-		t.Fatalf("unreadable files must be reported (2 expected, the third only has bad items): %d", len(reported))
+	if len(reported) != 3 {
+		t.Fatalf("each unreadable file must be reported once: %v", reported)
+	}
+	for _, err := range reported {
+		if !errors.Is(err, ErrNotRestored) {
+			t.Fatalf("an unreadable file must be reported as not restored: %v", err)
+		}
+	}
+}
+
+// Bad entries inside a good file are skipped, and times are held to the limits.
+func TestSavedTimesAreClampedAndBadEntriesSkipped(t *testing.T) {
+	now := time.Now()
+	store := &memoryStore{}
+	m := persistentManager(t, store, rememberPassword, &now, nil)
+	kept, _ := m.LoginRemember(context.Background(), "192.0.2.1", rememberUser, rememberPassword, true)
+	var file savedSessions
+	if err := json.Unmarshal(store.files[persistFile], &file); err != nil || len(file.Sessions) != 1 {
+		t.Fatal("unexpected saved file", err)
+	}
+	good := file.Sessions[0]
+	far := now.Add(10 * 365 * 24 * time.Hour).Unix()
+	stretched := good
+	stretched.Expires, stretched.Absolute = far, far // a wrong clock wrote this
+	future := good
+	future.Key = strings.Repeat("A", 43)
+	future.Created = far
+	short := good
+	short.Key = "short"
+	file.Sessions = []savedSession{stretched, future, short, stretched}
+	raw, _ := json.Marshal(file)
+	store.files[persistFile] = raw
+
+	later := now.Add(60 * 24 * time.Hour)
+	restarted := persistentManager(t, store, rememberPassword, &later, nil)
+	if len(restarted.sessions) != 1 {
+		t.Fatalf("only the one good entry may be restored (duplicates collapse): %d", len(restarted.sessions))
+	}
+	if _, err := restarted.Authorize(readRequest(restarted, kept), false); err != nil {
+		t.Fatal("a clamped session is still valid inside 90 days", err)
+	}
+	later = now.Add(91 * 24 * time.Hour)
+	if _, err := restarted.Authorize(readRequest(restarted, kept), false); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("a stretched time outlived the 90 day limit")
+	}
+}
+
+// Changing the password away and back must not bring the old sessions back.
+func TestChangingThePasswordBackDoesNotRestoreOldSessions(t *testing.T) {
+	now := time.Now()
+	store := &memoryStore{}
+	first := persistentManager(t, store, rememberPassword, &now, nil)
+	old, _ := first.LoginRemember(context.Background(), "192.0.2.1", rememberUser, rememberPassword, true)
+
+	changed := persistentManager(t, store, "another-fixture-password-1", &now, nil)
+	if _, err := changed.Authorize(readRequest(changed, old), false); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("session survived a password change")
+	}
+	if _, err := changed.LoginRemember(context.Background(), "192.0.2.1", rememberUser, "another-fixture-password-1", true); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(24 * time.Hour)
+	back := persistentManager(t, store, rememberPassword, &now, nil)
+	if _, err := back.Authorize(readRequest(back, old), false); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("changing the password back brought an old session back")
+	}
+}
+
+func TestEachInstallationHasItsOwnSalt(t *testing.T) {
+	now := time.Now()
+	a, b := &memoryStore{}, &memoryStore{}
+	ma := persistentManager(t, a, rememberPassword, &now, nil)
+	mb := persistentManager(t, b, rememberPassword, &now, nil)
+	ma.LoginRemember(context.Background(), "192.0.2.1", rememberUser, rememberPassword, true)
+	mb.LoginRemember(context.Background(), "192.0.2.1", rememberUser, rememberPassword, true)
+	var fa, fb savedSessions
+	json.Unmarshal(a.files[persistFile], &fa)
+	json.Unmarshal(b.files[persistFile], &fb)
+	if fa.Salt == "" || fa.Salt == fb.Salt || fa.Check == fb.Check {
+		t.Fatal("installations with the same credentials must not share salt or check")
+	}
+}
+
+// A sign-out that could not be saved is retried, and the failure says what it is.
+func TestFailedSignOutSaveIsRetriedAndReportedAsRevocation(t *testing.T) {
+	now := time.Now()
+	store := &memoryStore{}
+	var reported []error
+	m := persistentManager(t, store, rememberPassword, &now, func(err error) { reported = append(reported, err) })
+	revoked, _ := m.LoginRemember(context.Background(), "192.0.2.1", rememberUser, rememberPassword, true)
+	other, _ := m.LoginRemember(context.Background(), "192.0.2.2", rememberUser, rememberPassword, true)
+
+	store.failing = true
+	m.Logout(revoked.ID)
+	if len(reported) != 1 || !errors.Is(reported[0], ErrRevocationNotSaved) {
+		t.Fatalf("an unsaved sign-out must be reported as such: %v", reported)
+	}
+	// Requests inside the minute do not hammer the store.
+	now = now.Add(10 * time.Second)
+	writes := store.writes
+	if _, err := m.Authorize(readRequest(m, other), false); err != nil || store.writes != writes || len(reported) != 1 {
+		t.Fatal("retry came too early", err)
+	}
+	// The store works again: the next request after a minute saves the sign-out.
+	store.failing = false
+	now = now.Add(time.Minute)
+	if _, err := m.Authorize(readRequest(m, other), false); err != nil {
+		t.Fatal(err)
+	}
+	restarted := persistentManager(t, store, rememberPassword, &now, nil)
+	if _, err := restarted.Authorize(readRequest(restarted, revoked), false); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("a signed-out session came back after the retried save")
+	}
+	if _, err := restarted.Authorize(readRequest(restarted, other), false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNormalSessionCookieEndsWithTheBrowserSession(t *testing.T) {
+	now := time.Now()
+	m := persistentManager(t, &memoryStore{}, rememberPassword, &now, nil)
+	plain, _ := m.LoginRemember(context.Background(), "192.0.2.1", rememberUser, rememberPassword, false)
+	if c := m.Cookie(plain); !c.Expires.IsZero() || c.MaxAge != 0 {
+		t.Fatalf("a normal session cookie must have no expiry: %+v", c)
 	}
 }
 
@@ -270,8 +394,8 @@ func TestPlainSessionsNeverTouchTheStoreAndPlainEvictionOfSavedOneIsSaved(t *tes
 	restarted := persistentManager(t, store, rememberPassword, &now, nil)
 	_, inMemory := m.sessions[m.sid(kept.ID)]
 	_, afterRestart := restarted.sessions[restarted.sid(kept.ID)]
-	if inMemory != afterRestart {
-		t.Fatalf("saved sessions differ from memory: memory %v, restart %v", inMemory, afterRestart)
+	if inMemory || afterRestart {
+		t.Fatalf("the oldest remembered session must have been evicted and saved as gone: memory %v, restart %v", inMemory, afterRestart)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -27,6 +28,11 @@ var (
 	ErrOrigin        = errors.New("PUBLIC_ORIGIN_MISMATCH")
 	ErrRateLimited   = errors.New("WEB_LOGIN_RATE_LIMITED")
 	ErrConfiguration = errors.New("INVALID_WEB_AUTH_CONFIGURATION")
+
+	// Reported through the callback of NewPersistent; they never stop a sign-in.
+	ErrNotSaved           = errors.New("WEB_SESSIONS_NOT_SAVED")
+	ErrRevocationNotSaved = errors.New("WEB_SESSION_REVOCATION_NOT_SAVED")
+	ErrNotRestored        = errors.New("WEB_SESSIONS_NOT_RESTORED")
 )
 
 const cookieName = "cph_session"
@@ -65,6 +71,7 @@ type Store interface {
 
 // savedSession is one remembered session on disk. The cookie value itself is
 // never stored, only a keyed hash of it, so the file cannot be used to sign in.
+// Times are Unix seconds.
 type savedSession struct {
 	Key      string `json:"k"`
 	CSRF     string `json:"c"`
@@ -73,10 +80,17 @@ type savedSession struct {
 	Absolute int64  `json:"a"`
 }
 
+// savedSessions is the whole file. Salt and Check tie it to the web user name
+// and password: Check is a keyed hash that only matches when the key derived
+// from the current credentials is the one that wrote the file.
 type savedSessions struct {
 	Version  int            `json:"v"`
+	Salt     string         `json:"n"`
+	Check    string         `json:"x"`
 	Sessions []savedSession `json:"s"`
 }
+
+const savedVersion = 2
 
 func (s Session) String() string { return "auth.Session{redacted}" }
 
@@ -101,7 +115,16 @@ type Manager struct {
 	store       Store
 	onSaveError func(error)
 	persistMu   sync.Mutex
-	persistedAt time.Time
+	// salt and check are written to the file; see savedSessions.
+	sidSalt []byte
+	check   string
+	// persistedAt is the last successful save. After a failed save, dirty stays
+	// set and the next sign-in, sign-out or request after retryAt tries again;
+	// pendingRevocation says the failed save was about removing a session.
+	persistedAt       time.Time
+	dirty             bool
+	retryAt           time.Time
+	pendingRevocation bool
 }
 
 func (m *Manager) String() string { return "auth.Manager{redacted}" }
@@ -194,66 +217,116 @@ func NewOrigins(username, password string, origins []string, ttl time.Duration) 
 }
 
 // NewPersistent is NewOrigins that also keeps "keep me signed in" sessions in
-// store, so that they survive a restart. Changing the user name or password
-// ends them all. A store problem never stops the sign-in: onSaveError is told,
-// and the affected sessions then last until the next restart.
+// store, so that they survive a restart. A changed user name or password ends
+// them all: the file records which credentials wrote it, and a file from other
+// credentials is emptied at start, so that changing the password back does not
+// bring old sessions back. A store problem never stops the sign-in; it is
+// reported through onSaveError (see ErrNotSaved, ErrRevocationNotSaved and
+// ErrNotRestored).
 func NewPersistent(username, password string, origins []string, ttl time.Duration, store Store, onSaveError func(error)) (*Manager, error) {
+	return newPersistent(username, password, origins, ttl, store, onSaveError, time.Now)
+}
+
+// newPersistent takes the clock so that tests can start a manager at any time.
+func newPersistent(username, password string, origins []string, ttl time.Duration, store Store, onSaveError func(error), now func() time.Time) (*Manager, error) {
 	m, err := NewOrigins(username, password, origins, ttl)
 	if err != nil {
 		return nil, err
 	}
-	key, err := pbkdf2.Key(sha256.New, password, []byte("cph-web-session-v1|"+username), 600000, 32)
+	m.now = now
+	m.store = store
+	m.onSaveError = onSaveError
+	var saved savedSessions
+	haveFile := false
+	raw, readErr := store.Read(persistFile)
+	switch {
+	case errors.Is(readErr, os.ErrNotExist):
+	case readErr != nil:
+		m.report(fmt.Errorf("%w: %w", ErrNotRestored, readErr))
+	default:
+		haveFile = json.Unmarshal(raw, &saved) == nil && saved.Version == savedVersion
+		if haveFile {
+			salt, err := base64.RawURLEncoding.DecodeString(saved.Salt)
+			haveFile = err == nil && len(salt) == 16
+		}
+		if !haveFile {
+			m.report(fmt.Errorf("%w: %w", ErrNotRestored, ErrConfiguration))
+			saved = savedSessions{}
+		}
+	}
+	// Each installation has its own random salt, so guesses cannot be shared.
+	salt := make([]byte, 16)
+	if haveFile {
+		salt, _ = base64.RawURLEncoding.DecodeString(saved.Salt)
+	} else if _, err := rand.Read(salt); err != nil {
+		return nil, ErrConfiguration
+	}
+	key, err := pbkdf2.Key(sha256.New, password, append(append([]byte{}, salt...), []byte("|cph-web-session-v2|"+username)...), 600000, 32)
 	if err != nil {
 		return nil, ErrConfiguration
 	}
 	m.sidKey = key
-	m.store = store
-	m.onSaveError = onSaveError
-	m.load()
+	m.sidSalt = salt
+	check := hmac.New(sha256.New, key)
+	check.Write([]byte("cph-web-session-check"))
+	m.check = base64.RawURLEncoding.EncodeToString(check.Sum(nil))
+	if !haveFile {
+		return m, nil
+	}
+	if subtle.ConstantTimeCompare([]byte(saved.Check), []byte(m.check)) == 1 {
+		m.restore(saved.Sessions)
+	} else if len(saved.Sessions) > 0 {
+		// Written for other credentials: end those sessions for good.
+		m.save(true)
+	}
 	return m, nil
 }
 
-func (m *Manager) saveFailed(err error) {
+func (m *Manager) report(err error) {
 	if m.onSaveError != nil {
 		m.onSaveError(err)
 	}
 }
 
-// load restores the saved sessions that have not ended. A missing file is
-// normal; an unreadable one is reported and ignored.
-func (m *Manager) load() {
-	raw, err := m.store.Read(persistFile)
-	if errors.Is(err, os.ErrNotExist) {
-		return
-	}
-	if err != nil {
-		m.saveFailed(err)
-		return
-	}
-	var saved savedSessions
-	if json.Unmarshal(raw, &saved) != nil || saved.Version != 1 {
-		m.saveFailed(ErrConfiguration)
-		return
-	}
+// restore adopts the saved sessions that have not ended. Times from the file
+// are clamped to the limits a new session would get, so a wrong clock when the
+// file was written cannot make a session last longer.
+func (m *Manager) restore(items []savedSession) {
 	now := m.now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, item := range saved.Sessions {
+	for _, item := range items {
 		if len(m.sessions) >= maxSessions {
 			break
 		}
-		s := Session{CSRF: item.CSRF, remember: true, created: time.Unix(item.Created, 0), expires: time.Unix(item.Expires, 0), absolute: time.Unix(item.Absolute, 0)}
-		if len(item.Key) != 43 || len(item.CSRF) < 32 || len(item.CSRF) > 128 || !now.Before(s.expires) || !now.Before(s.absolute) {
+		created := time.Unix(item.Created, 0)
+		absolute := time.Unix(item.Absolute, 0)
+		expires := time.Unix(item.Expires, 0)
+		if created.After(now.Add(time.Minute)) {
 			continue
 		}
-		m.sessions[item.Key] = s
+		if limit := created.Add(rememberAbsolute); absolute.After(limit) {
+			absolute = limit
+		}
+		if limit := now.Add(rememberIdle); expires.After(limit) {
+			expires = limit
+		}
+		if expires.After(absolute) {
+			expires = absolute
+		}
+		if len(item.Key) != 43 || len(item.CSRF) < 32 || len(item.CSRF) > 128 || !now.Before(expires) || !now.Before(absolute) {
+			continue
+		}
+		m.sessions[item.Key] = Session{CSRF: item.CSRF, remember: true, created: created, expires: expires, absolute: absolute}
 	}
 }
 
 // save writes the remembered sessions. It takes a fresh snapshot under the
 // lock and writes outside it, one writer at a time, so the file always ends
-// with the newest state.
-func (m *Manager) save() {
+// with the newest state. revocation says that a session was removed, which a
+// failed save must not hide: the removed session would come back at the next
+// restart.
+func (m *Manager) save(revocation bool) {
 	if m.store == nil {
 		return
 	}
@@ -261,22 +334,38 @@ func (m *Manager) save() {
 	defer m.persistMu.Unlock()
 	m.mu.Lock()
 	now := m.now()
-	saved := savedSessions{Version: 1}
+	saved := savedSessions{Version: savedVersion, Salt: base64.RawURLEncoding.EncodeToString(m.sidSalt), Check: m.check}
 	for key, s := range m.sessions {
 		if s.remember && now.Before(s.expires) && now.Before(s.absolute) {
 			saved.Sessions = append(saved.Sessions, savedSession{Key: key, CSRF: s.CSRF, Created: s.created.Unix(), Expires: s.expires.Unix(), Absolute: s.absolute.Unix()})
 		}
 	}
-	m.persistedAt = now
 	m.mu.Unlock()
 	raw, err := json.Marshal(saved)
 	if err == nil {
 		err = m.store.Write(persistFile, raw)
 	}
+	m.mu.Lock()
+	kind := ErrNotSaved
 	if err != nil {
-		m.saveFailed(err)
+		m.pendingRevocation = m.pendingRevocation || revocation
+		if m.pendingRevocation {
+			kind = ErrRevocationNotSaved
+		}
+		m.dirty = true
+		m.retryAt = m.now().Add(time.Minute)
+	} else {
+		m.dirty, m.pendingRevocation = false, false
+		m.persistedAt = now
+	}
+	m.mu.Unlock()
+	if err != nil {
+		m.report(fmt.Errorf("%w: %w", kind, err))
 	}
 }
+
+// retryDue says an earlier save failed and a minute has passed. Call with m.mu held.
+func (m *Manager) retryDue(now time.Time) bool { return m.dirty && !now.Before(m.retryAt) }
 
 func (m *Manager) Login(username, password string) (Session, error) {
 	return m.LoginFrom(context.Background(), "local", username, password)
@@ -367,10 +456,10 @@ func (m *Manager) LoginRemember(ctx context.Context, peer, username, password st
 	m.mu.Lock()
 	now = m.now()
 	// The saved file changes when a remembered session is added or removed.
-	changed := remember
+	removed := false
 	for key, s := range m.sessions {
 		if !now.Before(s.expires) || !now.Before(s.absolute) {
-			changed = changed || s.remember
+			removed = removed || s.remember
 			delete(m.sessions, key)
 		}
 	}
@@ -383,7 +472,7 @@ func (m *Manager) LoginRemember(ctx context.Context, peer, username, password st
 				created = s.created
 			}
 		}
-		changed = changed || m.sessions[oldest].remember
+		removed = removed || m.sessions[oldest].remember
 		delete(m.sessions, oldest)
 	}
 	idle, absolute := m.ttl, sessionAbsolute
@@ -393,15 +482,21 @@ func (m *Manager) LoginRemember(ctx context.Context, peer, username, password st
 	session := Session{ID: id, CSRF: csrf, expires: now.Add(idle), created: now, absolute: now.Add(absolute), remember: remember}
 	m.sessions[m.sid(id)] = session
 	delete(m.buckets, peer)
+	retry := m.retryDue(now)
 	m.mu.Unlock()
-	if changed {
-		m.save()
+	if remember || removed || retry {
+		m.save(removed)
 	}
 	return session, nil
 }
 
 func (m *Manager) Cookie(session Session) *http.Cookie {
-	return &http.Cookie{Name: cookieName, Value: session.ID, Path: "/", HttpOnly: true, Secure: m.scheme == "https", SameSite: http.SameSiteStrictMode, Expires: session.absolute}
+	cookie := &http.Cookie{Name: cookieName, Value: session.ID, Path: "/", HttpOnly: true, Secure: m.scheme == "https", SameSite: http.SameSiteStrictMode}
+	// Without "keep me signed in" the cookie ends with the browser session.
+	if session.remember {
+		cookie.Expires = session.absolute
+	}
+	return cookie
 }
 
 func (m *Manager) CheckOrigin(r *http.Request) error {
@@ -467,7 +562,7 @@ func (m *Manager) authorize(r *http.Request, mutation, touch bool) (Session, err
 	}
 	m.mu.Lock()
 	current, stillPresent := m.sessions[key]
-	slid := false
+	saveNow, revocation := false, false
 	if stillPresent && touch {
 		idle := m.ttl
 		if current.remember {
@@ -477,14 +572,17 @@ func (m *Manager) authorize(r *http.Request, mutation, touch bool) (Session, err
 		current.expires = now.Add(idle)
 		m.sessions[key] = current
 		// Sliding a remembered session is saved now and then, not on every request.
-		slid = current.remember && now.Sub(m.persistedAt) >= persistEvery
+		// After a failed save, the next try waits for retryAt.
+		waiting := m.dirty && now.Before(m.retryAt)
+		saveNow = m.retryDue(now) || (current.remember && !waiting && now.Sub(m.persistedAt) >= persistEvery)
+		revocation = m.pendingRevocation
 	}
 	m.mu.Unlock()
 	if !stillPresent {
 		return Session{}, ErrUnauthorized
 	}
-	if slid {
-		m.save()
+	if saveNow {
+		m.save(revocation)
 	}
 	return session, nil
 }
@@ -496,7 +594,7 @@ func (m *Manager) Logout(id string) {
 	delete(m.sessions, key)
 	m.mu.Unlock()
 	if found && removed.remember {
-		m.save()
+		m.save(true)
 	}
 }
 
