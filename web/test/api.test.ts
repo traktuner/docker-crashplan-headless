@@ -428,3 +428,28 @@ test('signing in again after a server restart adopts the new engine context', as
     server.close()
   }
 })
+
+test('signing in sends the keep-me-signed-in choice', async () => {
+  const bodies: Array<Record<string, unknown>> = []
+  const server = createServer((request, response) => {
+    let raw = ''
+    request.on('data', (chunk) => (raw += chunk))
+    request.on('end', () => {
+      bodies.push(JSON.parse(raw) as Record<string, unknown>)
+      response.setHeader('Content-Type', 'application/json')
+      response.end('{"data":{"csrf":"token"}}')
+    })
+  }).listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  try {
+    const address = server.address()
+    assert(address && typeof address !== 'string')
+    const api = new API(`http://127.0.0.1:${address.port}`)
+    await api.signIn('admin', 'a-long-enough-password')
+    await api.signIn('admin', 'a-long-enough-password', true)
+    assert.equal(bodies[0]?.remember, false)
+    assert.equal(bodies[1]?.remember, true)
+  } finally {
+    server.close()
+  }
+})

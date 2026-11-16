@@ -214,7 +214,19 @@ func run() error {
 			sessions, err = auth.NewOpen(cfg.PublicOrigins)
 			logger.Warn("web_auth_disabled", "hint", "CPH_AUTH_MODE=none: anyone who can reach the web address can use the backups; protect access in front of the container")
 		default:
-			sessions, err = auth.NewOrigins(cfg.WebUsername, cfg.WebPassword, cfg.PublicOrigins, 30*time.Minute)
+			// "Keep me signed in" sessions are saved in the private state directory,
+			// so they survive a restart. A save problem is logged, never fatal.
+			sessions, err = auth.NewPersistent(cfg.WebUsername, cfg.WebPassword, cfg.PublicOrigins, 30*time.Minute, store, func(err error) {
+				switch {
+				case errors.Is(err, auth.ErrRevocationNotSaved):
+					logger.Warn("web_session_revocation_not_saved", "hint", "a signed-out or replaced \"keep me signed in\" session may return after the next restart; the save is retried every minute; to end them for certain, stop the container, delete /config/cph/web-sessions.json and start it again", "error", err.Error())
+				case errors.Is(err, auth.ErrNotRestored):
+					logger.Warn("web_sessions_not_restored", "hint", "the saved \"keep me signed in\" sessions could not be read at this start; those browsers must sign in again", "error", err.Error())
+				default:
+					logger.Warn("web_sessions_not_saved", "hint", "\"keep me signed in\" sessions will not survive the next restart until saving works again; it is retried every minute", "error", err.Error())
+				}
+			})
+
 		}
 		if err != nil {
 			return config.ErrConfiguration

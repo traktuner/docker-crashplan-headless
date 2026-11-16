@@ -141,6 +141,7 @@ func (s *Server) handler(local bool) http.Handler {
 			var in struct {
 				Username string `json:"username"`
 				Password string `json:"password"`
+				Remember bool   `json:"remember"`
 			}
 			if err := decode(w, r, &in); err != nil {
 				writeError(w, err)
@@ -159,7 +160,7 @@ func (s *Server) handler(local bool) http.Handler {
 				writeError(w, auth.ErrUnauthorized)
 				return
 			}
-			session, err := login.LoginFrom(r.Context(), peer, in.Username, in.Password)
+			session, err := login.LoginRemember(r.Context(), peer, in.Username, in.Password, in.Remember)
 			if errors.Is(err, auth.ErrUnauthorized) {
 				// Say plainly that the entered credentials were wrong; this is the
 				// web password of the container, not the CrashPlan account.
