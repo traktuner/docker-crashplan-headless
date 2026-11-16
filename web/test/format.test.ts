@@ -112,3 +112,33 @@ test('counts below one million are exact', () => {
   assert.equal(compactCount('999999'), '999,999')
   assert.equal(compactCount('1200000'), '1.2 million')
 })
+
+test('destination not-ready reasons follow the stock status line', () => {
+  const backingUp = set({ remainingFiles: '10', remainingBytes: '1000', lastBackup: '1' })
+  // Running maintenance comes before the destination's not-ready reason, as in the desktop app.
+  const maintaining = status([
+    dest({ sets: [backingUp], notReadyCode: 'MANIFEST_NOT_INITIALIZED', maintenance: { cache: false, deep: true, step: 'VERIFYING_FILES', percent: 98.45 } }),
+  ])
+  assert.equal(maintaining.kind, 'maintenance')
+  assert.equal(maintaining.title, 'Archive maintenance (deep)')
+
+  // "Archive missing" alone is grey (a warning), never a red error, with the stock label.
+  const missing = status([dest({ sets: [backingUp], notReadyCode: 'MANIFEST_NOT_INITIALIZED' })])
+  assert.equal(missing.kind, 'blocked')
+  assert.equal(missing.title, 'Archive missing')
+  assert.equal(missing.tone, 'warn')
+  assert.doesNotMatch(missing.title, /unavailable/)
+
+  const routine = status([dest({ sets: [backingUp], notReadyCode: 'MANIFEST_MAINTENANCE' })])
+  assert.equal(routine.title, 'Routine maintenance')
+  assert.equal(routine.tone, 'warn')
+
+  // Only the reasons the stock app marks red are errors.
+  for (const code of ['CAPACITY_REDUCED', 'INVALID_BLOCK_NUMBER', 'LICENSE_LIMIT_REACHED']) {
+    const severe = status([dest({ sets: [backingUp], notReadyCode: code })])
+    assert.equal(severe.tone, 'bad', code)
+  }
+  for (const code of ['EXCEPTION', 'BUSY', 'MANIFEST_MOVED', 'PAUSED']) {
+    assert.equal(status([dest({ sets: [backingUp], notReadyCode: code })]).tone, 'warn', code)
+  }
+})
