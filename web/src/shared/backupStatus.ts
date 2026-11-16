@@ -51,28 +51,40 @@ const notReady: Record<string, string> = {
   BUSY: 'The destination is busy. Backup resumes automatically.',
   CAPACITY_REDUCED: 'Storage quota reached. Contact your administrator.',
   DISABLED: 'Outside the destination’s backup schedule. Backup resumes automatically.',
-  EXCEPTION: 'Unknown error at the destination. Contact support.',
+  EXCEPTION: 'Unknown error at the destination. If it does not clear by itself, contact support.',
   INVALID_BLOCK_NUMBER: 'Legacy archive. Contact support.',
   LICENSE_LIMIT_REACHED: 'Not licensed. Contact your administrator.',
   MANIFEST_MAINTENANCE: 'Routine maintenance. Backup resumes when it completes.',
   MANIFEST_MIGRATION_NEEDED: 'Routine maintenance. Backup resumes when it completes.',
   MANIFEST_MOVED: 'The backup location is moving. Backup resumes when the move completes.',
-  MANIFEST_NOT_INITIALIZED: 'Archive missing. The backup location is not accessible.',
+  MANIFEST_NOT_INITIALIZED:
+    'The destination cannot open this backup right now. This often clears by itself, for example after maintenance at the destination.',
   NETWORK_BLOCKED: 'The destination’s network is blocked. Backup resumes on approved networks.',
   NOT_AVAILABLE: 'Preparing to back up.',
   PAUSED: 'The destination paused backup. It resumes when the destination is ready.',
 }
-/** Not-ready reasons that clear by themselves; shown after active work. */
-const transientNotReady = new Set([
-  'BATTERY_BLOCKED',
-  'BUSY',
-  'DISABLED',
-  'MANIFEST_MAINTENANCE',
-  'MANIFEST_MIGRATION_NEEDED',
-  'MANIFEST_MOVED',
-  'NETWORK_BLOCKED',
-  'PAUSED',
-])
+/** The stock app's short label for each not-ready reason (…_condensed). */
+const notReadyTitle: Record<string, string> = {
+  BATTERY_BLOCKED: 'Low battery on destination',
+  BUSY: 'Destination busy',
+  CAPACITY_REDUCED: 'Storage quota reached',
+  DISABLED: 'Destination schedule',
+  EXCEPTION: 'Unknown error',
+  INVALID_BLOCK_NUMBER: 'Legacy archive',
+  LICENSE_LIMIT_REACHED: 'Not licensed',
+  MANIFEST_MAINTENANCE: 'Routine maintenance',
+  MANIFEST_MIGRATION_NEEDED: 'Routine maintenance',
+  MANIFEST_MOVED: 'Moving backup location',
+  MANIFEST_NOT_INITIALIZED: 'Archive missing',
+  NETWORK_BLOCKED: 'Destination’s network blocked',
+  PAUSED: 'Destination paused',
+}
+/**
+ * Not-ready reasons the stock app marks red (getNotReadyIconState). All others,
+ * including "Archive missing", are grey there: the destination reports them and
+ * they usually clear by themselves, so they come after active work.
+ */
+const severeNotReady = new Set(['CAPACITY_REDUCED', 'INVALID_BLOCK_NUMBER', 'LICENSE_LIMIT_REACHED'])
 const disconnected: Record<string, { title: string; detail: string }> = {
   NOT_AUTHORIZED: {
     title: 'Destination disconnected',
@@ -264,15 +276,17 @@ function destinationCandidates(d: DestinationProgress, now: number): Candidate[]
       },
     })
   const code = d.notReadyCode
+  // As in the stock status line, running maintenance comes first (rank 4) and
+  // the destination's not-ready reason after it, even a severe one.
   if (code && code !== 'NOT_AVAILABLE')
     out.push({
-      rank: transientNotReady.has(code) ? 9 : 2,
+      rank: severeNotReady.has(code) ? 4.5 : 9,
       status: {
         ...at,
         kind: 'blocked',
-        title: 'Destination unavailable',
+        title: notReadyTitle[code] ?? 'Destination not ready',
         detail: notReady[code] ?? 'Backup resumes automatically when the destination is ready.',
-        tone: transientNotReady.has(code) ? 'warn' : 'bad',
+        tone: severeNotReady.has(code) ? 'bad' : 'warn',
         busy: false,
         actions: noActions,
       },
