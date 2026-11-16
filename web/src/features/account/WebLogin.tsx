@@ -14,10 +14,12 @@ export function WebLogin({
 }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [remember, setRemember] = useState(false)
   // Checked on submit: password managers fill fields without input events.
   const [problem, setProblem] = useState('')
   const login = useMutation({
-    mutationFn: ({ user, pass }: { user: string; pass: string }) => api.signIn(user, pass),
+    mutationFn: ({ user, pass, keep }: { user: string; pass: string; keep: boolean }) =>
+      api.signIn(user, pass, keep),
     onSuccess: onSession,
     onSettled: () => setPassword(''),
   })
@@ -51,7 +53,7 @@ export function WebLogin({
             setProblem('')
             setUsername(user)
             setPassword(pass)
-            login.mutate({ user, pass })
+            login.mutate({ user, pass, keep: remember })
           }}
         >
           <Field label="User name">
@@ -75,6 +77,18 @@ export function WebLogin({
               autoComplete="current-password"
             />
           </Field>
+          <label className="check">
+            <input
+              type="checkbox"
+              name="remember"
+              checked={remember}
+              onChange={(e) => setRemember(e.target.checked)}
+            />
+            <span>Keep me signed in</span>
+          </label>
+          <span className="muted" style={{ marginTop: -4, fontSize: 13 }}>
+            Stays signed in on this device for up to 30 days, also after a restart. Leave it off on a shared computer.
+          </span>
           {problem && (
             <span className="inline-error" role="alert">
               {problem}

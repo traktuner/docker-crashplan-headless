@@ -663,7 +663,7 @@ export class API {
     this.csrf = session.csrf
     return session
   }
-  async signIn(username: string, password: string): Promise<Session> {
+  async signIn(username: string, password: string, remember = false): Promise<Session> {
     // A page that stayed open across a container restart signs in again with the
     // old engine context in memory. The sign-in page holds no account forms, so
     // the new context is simply adopted instead of reported as a changed account.
@@ -671,6 +671,7 @@ export class API {
     const session = await this.request<Session>('/api/v1/session', 'POST', {
       username,
       password,
+      remember,
     })
     this.csrf = session.csrf
     return session

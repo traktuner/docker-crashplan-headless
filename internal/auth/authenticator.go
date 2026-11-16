@@ -33,7 +33,8 @@ type PasswordLogin interface {
 	Authenticator
 	CheckRequestOrigin(r *http.Request) error
 	AdmitLogin() (func(), error)
-	LoginFrom(ctx context.Context, peer, username, password string) (Session, error)
+	// LoginRemember signs in; remember asks for a long-lived session.
+	LoginRemember(ctx context.Context, peer, username, password string, remember bool) (Session, error)
 	CookieFor(session Session, r *http.Request) *http.Cookie
 	Logout(id string)
 }

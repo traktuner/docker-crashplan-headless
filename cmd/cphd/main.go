@@ -214,7 +214,11 @@ func run() error {
 			sessions, err = auth.NewOpen(cfg.PublicOrigins)
 			logger.Warn("web_auth_disabled", "hint", "CPH_AUTH_MODE=none: anyone who can reach the web address can use the backups; protect access in front of the container")
 		default:
-			sessions, err = auth.NewOrigins(cfg.WebUsername, cfg.WebPassword, cfg.PublicOrigins, 30*time.Minute)
+			// "Keep me signed in" sessions are saved in the private state directory,
+			// so they survive a restart. A save problem is logged, never fatal.
+			sessions, err = auth.NewPersistent(cfg.WebUsername, cfg.WebPassword, cfg.PublicOrigins, 30*time.Minute, store, func(err error) {
+				logger.Warn("web_sessions_not_saved", "hint", "signed-in browsers that chose \"keep me signed in\" must sign in again after the next restart", "error", err.Error())
+			})
 		}
 		if err != nil {
 			return config.ErrConfiguration

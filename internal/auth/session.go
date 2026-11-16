@@ -4,15 +4,18 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +31,19 @@ var (
 
 const cookieName = "cph_session"
 
+const (
+	// A session without "keep me signed in" ends after the idle time given to
+	// the manager, or after sessionAbsolute, and does not survive a restart.
+	sessionAbsolute = 12 * time.Hour
+	// A remembered session slides over 30 idle days and ends after 90 days.
+	rememberIdle     = 30 * 24 * time.Hour
+	rememberAbsolute = 90 * 24 * time.Hour
+	// Sliding a remembered session forward is written to disk at most this often.
+	persistEvery = 6 * time.Hour
+	persistFile  = "web-sessions.json"
+	maxSessions  = 32
+)
+
 type Session struct {
 	ID   string `json:"-"`
 	CSRF string `json:"csrf"`
@@ -36,6 +52,30 @@ type Session struct {
 	expires  time.Time
 	created  time.Time
 	absolute time.Time
+	// remember marks a "keep me signed in" session; only these are saved.
+	remember bool
+}
+
+// Store keeps the remembered sessions private across restarts. statefile.Store
+// implements it; Read reports a missing record as os.ErrNotExist.
+type Store interface {
+	Read(name string) ([]byte, error)
+	Write(name string, raw []byte) error
+}
+
+// savedSession is one remembered session on disk. The cookie value itself is
+// never stored, only a keyed hash of it, so the file cannot be used to sign in.
+type savedSession struct {
+	Key      string `json:"k"`
+	CSRF     string `json:"c"`
+	Created  int64  `json:"t"`
+	Expires  int64  `json:"e"`
+	Absolute int64  `json:"a"`
+}
+
+type savedSessions struct {
+	Version  int            `json:"v"`
+	Sessions []savedSession `json:"s"`
 }
 
 func (s Session) String() string { return "auth.Session{redacted}" }
@@ -49,11 +89,19 @@ type Manager struct {
 	ttl        time.Duration
 	now        func() time.Time
 	mu         sync.Mutex
-	sessions   map[string]Session
+	sessions   map[string]Session // keyed by sid(cookie value)
 	buckets    map[string]attemptBucket
 	nextHash   time.Time
 	hashing    chan struct{}
 	admissions chan struct{}
+	// sidKey keys the session lookup hash. It is random per start, or derived
+	// from the credentials when sessions are saved, so that a changed password
+	// or user name ends every saved session.
+	sidKey      []byte
+	store       Store
+	onSaveError func(error)
+	persistMu   sync.Mutex
+	persistedAt time.Time
 }
 
 func (m *Manager) String() string { return "auth.Manager{redacted}" }
@@ -92,7 +140,19 @@ func newManager(username, password, publicOrigin string, ttl time.Duration) (*Ma
 	if err != nil {
 		return nil, ErrConfiguration
 	}
-	return &Manager{username: sha256.Sum256([]byte(username)), salt: salt, key: key, scheme: strings.SplitN(origin, ":", 2)[0], ttl: ttl, now: time.Now, sessions: make(map[string]Session), buckets: make(map[string]attemptBucket), hashing: make(chan struct{}, 2), admissions: make(chan struct{}, 8)}, nil
+	sidKey := make([]byte, 32)
+	if _, err := rand.Read(sidKey); err != nil {
+		return nil, ErrConfiguration
+	}
+	return &Manager{username: sha256.Sum256([]byte(username)), salt: salt, key: key, sidKey: sidKey, scheme: strings.SplitN(origin, ":", 2)[0], ttl: ttl, now: time.Now, sessions: make(map[string]Session), buckets: make(map[string]attemptBucket), hashing: make(chan struct{}, 2), admissions: make(chan struct{}, 8)}, nil
+}
+
+// sid is the key under which a session is kept; the cookie value is a secret
+// that is only ever compared through this keyed hash.
+func (m *Manager) sid(id string) string {
+	mac := hmac.New(sha256.New, m.sidKey)
+	mac.Write([]byte(id))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func randomID() (string, error) {
@@ -132,6 +192,92 @@ func NewOrigins(username, password string, origins []string, ttl time.Duration) 
 	}
 	return m, nil
 }
+
+// NewPersistent is NewOrigins that also keeps "keep me signed in" sessions in
+// store, so that they survive a restart. Changing the user name or password
+// ends them all. A store problem never stops the sign-in: onSaveError is told,
+// and the affected sessions then last until the next restart.
+func NewPersistent(username, password string, origins []string, ttl time.Duration, store Store, onSaveError func(error)) (*Manager, error) {
+	m, err := NewOrigins(username, password, origins, ttl)
+	if err != nil {
+		return nil, err
+	}
+	key, err := pbkdf2.Key(sha256.New, password, []byte("cph-web-session-v1|"+username), 600000, 32)
+	if err != nil {
+		return nil, ErrConfiguration
+	}
+	m.sidKey = key
+	m.store = store
+	m.onSaveError = onSaveError
+	m.load()
+	return m, nil
+}
+
+func (m *Manager) saveFailed(err error) {
+	if m.onSaveError != nil {
+		m.onSaveError(err)
+	}
+}
+
+// load restores the saved sessions that have not ended. A missing file is
+// normal; an unreadable one is reported and ignored.
+func (m *Manager) load() {
+	raw, err := m.store.Read(persistFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		m.saveFailed(err)
+		return
+	}
+	var saved savedSessions
+	if json.Unmarshal(raw, &saved) != nil || saved.Version != 1 {
+		m.saveFailed(ErrConfiguration)
+		return
+	}
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, item := range saved.Sessions {
+		if len(m.sessions) >= maxSessions {
+			break
+		}
+		s := Session{CSRF: item.CSRF, remember: true, created: time.Unix(item.Created, 0), expires: time.Unix(item.Expires, 0), absolute: time.Unix(item.Absolute, 0)}
+		if len(item.Key) != 43 || len(item.CSRF) < 32 || len(item.CSRF) > 128 || !now.Before(s.expires) || !now.Before(s.absolute) {
+			continue
+		}
+		m.sessions[item.Key] = s
+	}
+}
+
+// save writes the remembered sessions. It takes a fresh snapshot under the
+// lock and writes outside it, one writer at a time, so the file always ends
+// with the newest state.
+func (m *Manager) save() {
+	if m.store == nil {
+		return
+	}
+	m.persistMu.Lock()
+	defer m.persistMu.Unlock()
+	m.mu.Lock()
+	now := m.now()
+	saved := savedSessions{Version: 1}
+	for key, s := range m.sessions {
+		if s.remember && now.Before(s.expires) && now.Before(s.absolute) {
+			saved.Sessions = append(saved.Sessions, savedSession{Key: key, CSRF: s.CSRF, Created: s.created.Unix(), Expires: s.expires.Unix(), Absolute: s.absolute.Unix()})
+		}
+	}
+	m.persistedAt = now
+	m.mu.Unlock()
+	raw, err := json.Marshal(saved)
+	if err == nil {
+		err = m.store.Write(persistFile, raw)
+	}
+	if err != nil {
+		m.saveFailed(err)
+	}
+}
+
 func (m *Manager) Login(username, password string) (Session, error) {
 	return m.LoginFrom(context.Background(), "local", username, password)
 }
@@ -139,6 +285,12 @@ func (m *Manager) Login(username, password string) (Session, error) {
 // The caller supplies the peer IP from RemoteAddr. Forwarded headers do not
 // influence throttling. Password hashing never holds the session mutex.
 func (m *Manager) LoginFrom(ctx context.Context, peer, username, password string) (Session, error) {
+	return m.LoginRemember(ctx, peer, username, password, false)
+}
+
+// LoginRemember is LoginFrom; remember asks for a long-lived session that is
+// kept across restarts.
+func (m *Manager) LoginRemember(ctx context.Context, peer, username, password string, remember bool) (Session, error) {
 	if len(password) > 65536 || len(username) > 256 || len(peer) > 256 {
 		return Session{}, ErrUnauthorized
 	}
@@ -213,27 +365,38 @@ func (m *Manager) LoginFrom(ctx context.Context, peer, username, password string
 		return Session{}, err
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	now = m.now()
-	for id, s := range m.sessions {
+	// The saved file changes when a remembered session is added or removed.
+	changed := remember
+	for key, s := range m.sessions {
 		if !now.Before(s.expires) || !now.Before(s.absolute) {
-			delete(m.sessions, id)
+			changed = changed || s.remember
+			delete(m.sessions, key)
 		}
 	}
-	if len(m.sessions) >= 32 {
+	if len(m.sessions) >= maxSessions {
 		oldest := ""
 		var created time.Time
-		for id, s := range m.sessions {
+		for key, s := range m.sessions {
 			if oldest == "" || s.created.Before(created) {
-				oldest = id
+				oldest = key
 				created = s.created
 			}
 		}
+		changed = changed || m.sessions[oldest].remember
 		delete(m.sessions, oldest)
 	}
-	session := Session{ID: id, CSRF: csrf, expires: now.Add(m.ttl), created: now, absolute: now.Add(12 * time.Hour)}
-	m.sessions[id] = session
+	idle, absolute := m.ttl, sessionAbsolute
+	if remember {
+		idle, absolute = rememberIdle, rememberAbsolute
+	}
+	session := Session{ID: id, CSRF: csrf, expires: now.Add(idle), created: now, absolute: now.Add(absolute), remember: remember}
+	m.sessions[m.sid(id)] = session
 	delete(m.buckets, peer)
+	m.mu.Unlock()
+	if changed {
+		m.save()
+	}
 	return session, nil
 }
 
@@ -281,16 +444,19 @@ func (m *Manager) authorize(r *http.Request, mutation, touch bool) (Session, err
 	if err != nil {
 		return Session{}, ErrUnauthorized
 	}
+	key := m.sid(cookie.Value)
 	m.mu.Lock()
-	session, ok := m.sessions[cookie.Value]
+	session, ok := m.sessions[key]
 	if ok && (!m.now().Before(session.expires) || !m.now().Before(session.absolute)) {
-		delete(m.sessions, cookie.Value)
+		delete(m.sessions, key)
 		ok = false
 	}
 	m.mu.Unlock()
 	if !ok {
 		return Session{}, ErrUnauthorized
 	}
+	// Saved sessions only know the hash; callers get the cookie value back.
+	session.ID = cookie.Value
 	if mutation {
 		if err := m.CheckRequestOrigin(r); err != nil {
 			return Session{}, err
@@ -300,19 +466,39 @@ func (m *Manager) authorize(r *http.Request, mutation, touch bool) (Session, err
 		}
 	}
 	m.mu.Lock()
-	current, stillPresent := m.sessions[session.ID]
+	current, stillPresent := m.sessions[key]
+	slid := false
 	if stillPresent && touch {
-		current.expires = m.now().Add(m.ttl)
-		m.sessions[session.ID] = current
+		idle := m.ttl
+		if current.remember {
+			idle = rememberIdle
+		}
+		now := m.now()
+		current.expires = now.Add(idle)
+		m.sessions[key] = current
+		// Sliding a remembered session is saved now and then, not on every request.
+		slid = current.remember && now.Sub(m.persistedAt) >= persistEvery
 	}
 	m.mu.Unlock()
 	if !stillPresent {
 		return Session{}, ErrUnauthorized
 	}
+	if slid {
+		m.save()
+	}
 	return session, nil
 }
 
-func (m *Manager) Logout(id string) { m.mu.Lock(); delete(m.sessions, id); m.mu.Unlock() }
+func (m *Manager) Logout(id string) {
+	key := m.sid(id)
+	m.mu.Lock()
+	removed, found := m.sessions[key]
+	delete(m.sessions, key)
+	m.mu.Unlock()
+	if found && removed.remember {
+		m.save()
+	}
+}
 
 func (m *Manager) CookieFor(session Session, r *http.Request) *http.Cookie {
 	cookie := m.Cookie(session)

@@ -79,6 +79,17 @@ These settings apply only with `CPH_MODE=web`.
 | `CPH_TLS_CERT_FILE`, `CPH_TLS_KEY_FILE` | no | none | PEM certificate and key for direct HTTPS. Set both or neither. |
 | `CPH_TRUSTED_PROXIES` | no | none | JSON array of reverse-proxy CIDRs whose forwarded client address is trusted. |
 
+### How long a web sign-in lasts
+
+Each browser has its own sign-in; several devices can be signed in at the same time (up to 32).
+
+- **Normal sign-in:** ends after 30 minutes without use, or 12 hours after signing in. It is kept in memory only, so a container restart ends it.
+- **"Keep me signed in" ticked:** the browser stays signed in for up to 30 days without use and at most 90 days in total, also across container restarts. It is stored in `/config/cph/web-sessions.json` as a keyed hash of the cookie, never the cookie or the password, so the file cannot be used to sign in.
+- **Ends them:** "Sign out" ends that browser's sign-in for good. Changing `CPH_WEB_USERNAME` or the password ends every sign-in, including the kept ones.
+- If `/config/cph` cannot be written, the start log shows `web_sessions_not_saved`; kept sign-ins then last only until the next restart.
+
+Tick the box only on your own devices: whoever holds the browser can use the interface until the sign-in ends.
+
 ### Running without web sign-in
 
 `CPH_AUTH_MODE=none` removes the web sign-in. Use it only when something in front of the container already decides who may reach it, for example a VPN, a private network or a reverse proxy with its own sign-in. Everyone who can reach the address can then restore, change and delete backups.
