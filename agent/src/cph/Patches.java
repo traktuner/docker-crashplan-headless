@@ -1,6 +1,7 @@
 package cph;
 
 import java.lang.classfile.ClassFile;
+import java.lang.classfile.ClassHierarchyResolver;
 import java.lang.classfile.ClassModel;
 import java.lang.classfile.ClassTransform;
 import java.lang.classfile.CodeBuilder;
@@ -40,7 +41,7 @@ public final class Patches {
         }
 
         byte[] apply(byte[] classBytes) {
-            ClassFile cf = ClassFile.of();
+            ClassFile cf = ClassFile.of(ClassFile.ClassHierarchyResolverOption.of(HIERARCHY));
             ClassModel model = cf.parse(classBytes);
             cph.archive.ArchivePatches.validateFields(model, this);
             long matches = model.methods().stream().filter(this::matches).count();
@@ -69,6 +70,14 @@ public final class Patches {
     }
 
     private static final Map<String, Patch> ALL = new LinkedHashMap<>();
+
+    // Stack maps need the supertypes of the classes a patched method uses. The
+    // default resolver loads those classes, and a class loaded inside a
+    // transformer is not transformed again, so a patch for it would be skipped.
+    // Reading the class files keeps the load order irrelevant.
+    private static final ClassHierarchyResolver HIERARCHY = ClassHierarchyResolver
+            .ofResourceParsing(ClassLoader.getSystemClassLoader())
+            .orElse(ClassHierarchyResolver.defaultResolver()).cached();
 
     static {
         cph.archive.ArchivePatches.register(Patches::register);
@@ -167,6 +176,23 @@ public final class Patches {
                     if (matches != 1) throw new IllegalStateException("native maintenance file loop changed");
                 }
             })));
+
+        // Repair can renumber entries without moving them, and compaction,
+        // truncation, clearing and deletion rewrite the manifest. Each of them
+        // drops every saved resume entry first.
+        String fmfClass = "com/code42/backup/manifest/file/FileManifest";
+        String[][] rewrites = {
+            {"repair", "(Lcom/code42/throttle/IThrottlerInstance;)I"},
+            {"compact", "(Lcom/code42/backup/manifest/file/CompactFileManifestRule;Lcom/code42/io/ProgressControl;Z)V"},
+            {"truncate", "(J)V"},
+            {"clear", "()V"},
+            {"delete", "()Z"},
+        };
+        for (String[] method : rewrites) {
+            register(new Patch("reduce-resume-forget-" + method[0], "drop saved resume entries before the manifest is rewritten",
+                fmfClass, method[0], method[1],
+                cb -> cb.invokestatic(ClassDesc.of("cph.ReduceResume"), "forget", MethodTypeDesc.ofDescriptor("()V")), true));
+        }
 
         // All inotify watches of both backup engines (V1 BackupSetsManager and
         // V3 FileActivityService) go through InotifyManager.watch(File). Reporting

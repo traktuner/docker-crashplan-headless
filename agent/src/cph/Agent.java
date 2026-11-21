@@ -29,7 +29,7 @@ public final class Agent {
         var selected = new java.util.ArrayList<>(Patches.select(System.getenv("CPH_PATCHES")));
         for (var patch : Patches.all().values()) {
             if ((patch.name().startsWith("restore-") || patch.name().startsWith("archive-query-")
-                    || patch.name().equals("reduce-resume")) && selected.stream().noneMatch(p -> p.name().equals(patch.name()))) selected.add(patch);
+                    || patch.name().startsWith("reduce-resume")) && selected.stream().noneMatch(p -> p.name().equals(patch.name()))) selected.add(patch);
         }
         enabled = List.copyOf(selected);
         if (!enabled.isEmpty()) {

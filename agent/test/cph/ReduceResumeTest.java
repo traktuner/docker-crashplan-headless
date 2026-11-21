@@ -37,6 +37,9 @@ public final class ReduceResumeTest {
         fallsBackWhenEntryMoved(dir.resolve("b"));
         fallsBackWhenManifestReplaced(dir.resolve("c"));
         keepsNativeOrderForEarlierStart(dir.resolve("d"));
+        fallsBackWhenReplacedManifestGrew(dir.resolve("e"));
+        endsLikeNative(dir.resolve("f"));
+        if (args.length > 0 && args[0].equals("--agent")) forgetsBeforeRewrite(dir.resolve("g"));
         System.out.println("ReduceResumeTest PASS");
     }
 
@@ -46,7 +49,7 @@ public final class ReduceResumeTest {
         FileManifest fmf = manifest(dir);
         for (int i = 0; i < 3000; i++) add(fmf, i, 1 + i % 37);
         int start = 0;
-        int seeksBefore = ReduceResume.seeks;
+        int seeksBefore = ReduceResume.seeks.get();
         int[] sizes = {1, 4538 % 700, 209, 1, 1500, 3};
         for (int pass = 0; pass < sizes.length; pass++) {
             List<Seen> expected = nativeOrder(fmf);
@@ -61,8 +64,8 @@ public final class ReduceResumeTest {
                 fmf = manifest(dir);
             }
         }
-        if (ReduceResume.seeks - seeksBefore != sizes.length - 1) {
-            throw new AssertionError("expected a resume for every pass after the first, got " + (ReduceResume.seeks - seeksBefore));
+        if (ReduceResume.seeks.get() - seeksBefore != sizes.length - 1) {
+            throw new AssertionError("expected a resume for every pass after the first, got " + (ReduceResume.seeks.get() - seeksBefore));
         }
         // The rest of the manifest, as at the end of a cycle.
         List<Seen> expected = nativeOrder(fmf);
@@ -77,9 +80,9 @@ public final class ReduceResumeTest {
         for (int i = 0; i < 500; i++) add(fmf, i, 4);
         List<Seen> first = pass(fmf, 0, 100);
         add(fmf, 99, 30); // same file ID as the last entry read, longer path
-        int seeks = ReduceResume.seeks;
+        int seeks = ReduceResume.seeks.get();
         compare(nativeOrder(fmf), pass(fmf, 100, 50), 100, "moved");
-        if (ReduceResume.seeks != seeks) throw new AssertionError("resumed behind a moved entry");
+        if (ReduceResume.seeks.get() != seeks) throw new AssertionError("resumed behind a moved entry");
         if (!first.getLast().fileId().equals(fileId(99))) throw new AssertionError("fixture");
         fmf.close();
     }
@@ -94,9 +97,9 @@ public final class ReduceResumeTest {
         deleteTree(dir);
         fmf = manifest(dir);
         for (int i = 0; i < 400; i++) if (i % 3 != 0) add(fmf, i, 9);
-        int seeks = ReduceResume.seeks;
+        int seeks = ReduceResume.seeks.get();
         compare(nativeOrder(fmf), pass(fmf, 300, 20), 300, "replaced");
-        if (ReduceResume.seeks != seeks) throw new AssertionError("resumed in a replaced manifest");
+        if (ReduceResume.seeks.get() != seeks) throw new AssertionError("resumed in a replaced manifest");
         fmf.close();
     }
 
@@ -106,10 +109,58 @@ public final class ReduceResumeTest {
         FileManifest fmf = manifest(dir);
         for (int i = 0; i < 300; i++) add(fmf, i, 2 + i % 5);
         pass(fmf, 0, 200);
-        int seeks = ReduceResume.seeks;
+        int seeks = ReduceResume.seeks.get();
         compare(nativeOrder(fmf), pass(fmf, 150, 20), 150, "earlier");
         compare(nativeOrder(fmf), pass(fmf, 0, 10), 0, "restart");
-        if (ReduceResume.seeks != seeks) throw new AssertionError("resumed for an earlier start");
+        if (ReduceResume.seeks.get() != seeks) throw new AssertionError("resumed for an earlier start");
+        fmf.close();
+    }
+
+    /** A replaced manifest larger than the old one: only the index check can tell. */
+    static void fallsBackWhenReplacedManifestGrew(Path dir) throws Exception {
+        ReduceResume.forget();
+        FileManifest fmf = manifest(dir);
+        for (int i = 0; i < 400; i++) add(fmf, i, 9);
+        pass(fmf, 0, 300);
+        fmf.close();
+        deleteTree(dir);
+        fmf = manifest(dir);
+        for (int i = 0; i < 900; i++) if (i % 3 != 0) add(fmf, i, 9);
+        int seeks = ReduceResume.seeks.get();
+        compare(nativeOrder(fmf), pass(fmf, 300, 20), 300, "replaced and grown");
+        if (ReduceResume.seeks.get() != seeks) throw new AssertionError("resumed in a replaced, larger manifest");
+        fmf.close();
+    }
+
+    /** hasNext after the loop (completedFiles) and a start past the last entry. */
+    static void endsLikeNative(Path dir) throws Exception {
+        ReduceResume.forget();
+        FileManifest fmf = manifest(dir);
+        for (int i = 0; i < 50; i++) add(fmf, i, 3);
+        pass(fmf, 0, 10);
+        IOIterator<FileManifestEntry> it = ReduceResume.iterator(fmf, true, 10);
+        int index = -1;
+        while (it.hasNext()) {
+            it.next();
+            if (++index == 49) break;
+        }
+        if (it.hasNext()) throw new AssertionError("entries after the last one");
+        if (!pass(fmf, 500, 5).isEmpty()) throw new AssertionError("entries past the end");
+        fmf.close();
+    }
+
+    /** Through the agent: a native manifest rewrite drops the saved entry. */
+    static void forgetsBeforeRewrite(Path dir) throws Exception {
+        ReduceResume.forget();
+        FileManifest fmf = manifest(dir);
+        for (int i = 0; i < 200; i++) add(fmf, i, 6);
+        pass(fmf, 0, 100);
+        if (ReduceResume.marks() != 1) throw new AssertionError("no saved entry before the rewrite");
+        fmf.truncate(fmf.getDataSize());
+        if (ReduceResume.marks() != 0) throw new AssertionError("native truncate kept the saved entry");
+        int seeks = ReduceResume.seeks.get();
+        compare(nativeOrder(fmf), pass(fmf, 100, 10), 100, "after rewrite");
+        if (ReduceResume.seeks.get() != seeks) throw new AssertionError("resumed after a manifest rewrite");
         fmf.close();
     }
 

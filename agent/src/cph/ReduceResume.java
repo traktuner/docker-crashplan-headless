@@ -30,12 +30,14 @@ import java.util.concurrent.ConcurrentHashMap;
  * reading (the native loop discards them unread), and reading continues behind
  * the saved entry. The saved entry is checked before it is used: same manifest
  * file, a manifest that has not shrunk, and the manifest's own index still
- * places the saved file ID at the saved position. The native writer keeps entry
- * positions and lengths (an entry is rewritten in place when its length stays
- * the same and appended otherwise, and a removed entry keeps its file ID and
- * length), so a passing check means the entry numbering up to it is unchanged.
+ * places the saved file ID at the saved position. Between maintenance passes the
+ * native writer keeps entry positions and lengths: an entry is rewritten in
+ * place when its length stays the same and appended otherwise, and
+ * {@code remove()} keeps the old record's file ID and length. The operations
+ * that renumber or move entries (repair, compaction, truncation, clearing and
+ * deletion of the manifest) are patched to drop every saved entry first. So a
+ * passing check means the entry numbering up to the saved entry is unchanged.
  * Anything else, including any error, uses the native iterator from the start.
- * Nothing is read at an unchecked position.
  *
  * <p>{@code CPH_REDUCE_RESUME=0} turns the shortcut off.
  */
@@ -49,7 +51,7 @@ public final class ReduceResume {
     private static final boolean ENABLED = !"0".equals(System.getenv("CPH_REDUCE_RESUME"));
     private static volatile Access access;
     /** Successful resumes, for tests. */
-    static volatile int seeks;
+    static final java.util.concurrent.atomic.AtomicInteger seeks = new java.util.concurrent.atomic.AtomicInteger();
 
     /** Called in place of {@code fmf.fileManifestEntryIterator(includeRemoved)}. */
     public static IOIterator<FileManifestEntry> iterator(FileManifest fmf, boolean includeRemoved, int startEntryNum)
@@ -74,7 +76,7 @@ public final class ReduceResume {
                 if (next >= 0) {
                     access().position(inner, next);
                     skip = mark.index() + 1;
-                    seeks++;
+                    seeks.incrementAndGet();
                     Agent.log("reduce-resume: start entry " + startEntryNum + ", continuing after saved entry "
                             + mark.index() + " instead of reading " + skip + " entries");
                 } else {
@@ -98,8 +100,8 @@ public final class ReduceResume {
     /**
      * Returns the position after the saved entry, or -1 when it does not match.
      * The manifest's own index must still place the saved file ID at the saved
-     * position. An entry only moves when its length changes, and compaction or
-     * repair moves entries, so a match also keeps the saved entry end.
+     * position. An entry is relocated when its length changes, so a match also
+     * keeps the saved entry end; rewrites of the whole manifest drop the mark.
      */
     private static long verify(FileManifest fmf, Mark mark) throws IOException {
         synchronized (fmf) {
@@ -111,7 +113,13 @@ public final class ReduceResume {
         }
     }
 
-    static void forget() {
+    /** Number of manifests with a saved entry, for tests. */
+    static int marks() {
+        return LAST.size();
+    }
+
+    /** Drops every saved entry; called before the native manifest rewrites. */
+    public static void forget() {
         LAST.clear();
     }
 
