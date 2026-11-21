@@ -36,3 +36,10 @@ func TestRetiredDiagnosticSwitchIsNotForwarded(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeEnvironmentPassesReduceResumeSwitch(t *testing.T) {
+	env := NativeEnvironment([]string{"CPH_REDUCE_RESUME=0"}, "root", "/root")
+	if !strings.Contains(strings.Join(env, "\n"), "CPH_REDUCE_RESUME=0") {
+		t.Fatalf("switch missing: %v", env)
+	}
+}

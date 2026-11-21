@@ -158,6 +158,7 @@ The control daemon sets a soft Go memory target of 64 MiB unless `GOMEMLIMIT` is
 | Variable | Required | Default | Meaning |
 | --- | --- | --- | --- |
 | `CPH_PATCHES` | no | `no-file-watcher,no-watcher-walk` | Engine patches. The default turns off inotify file watching; `none` restores CrashPlan's watcher. Unknown names stop the start. |
+| `CPH_REDUCE_RESUME` | no | `1` | `0` turns off the maintenance shortcut. With it, each cleanup step the destination sends continues behind the last checked file-manifest entry instead of reading the whole manifest again. |
 | `CPH_STOP_GRACE_SECONDS` | no | `120` | Time the engine gets to stop, 1–240 seconds. Give Docker more (`stop_grace_period`). |
 | `CPH_DIAGNOSTICS` | no | `0` | `1`: native memory tracking and JVM attach. |
 | `CPH_JFR` | no | `0` | `1`: flight recording, at most 512 MiB and 24 hours. |
