@@ -16,7 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <ul>
  *   <li>CPH_PATCHES: comma-separated optional watcher patch names, or "none".</li>
  * </ul>
- * The restore boundary, archive query and reduce-resume patches are always applied.
+ * The restore boundary, archive query, reduce-resume and block-rollover patches are always applied.
  */
 public final class Agent {
 
@@ -29,7 +29,7 @@ public final class Agent {
         var selected = new java.util.ArrayList<>(Patches.select(System.getenv("CPH_PATCHES")));
         for (var patch : Patches.all().values()) {
             if ((patch.name().startsWith("restore-") || patch.name().startsWith("archive-query-")
-                    || patch.name().startsWith("reduce-resume")) && selected.stream().noneMatch(p -> p.name().equals(patch.name()))) selected.add(patch);
+                    || patch.name().startsWith("reduce-resume") || patch.name().equals("block-rollover")) && selected.stream().noneMatch(p -> p.name().equals(patch.name()))) selected.add(patch);
         }
         enabled = List.copyOf(selected);
         if (!enabled.isEmpty()) {

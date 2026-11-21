@@ -17,6 +17,8 @@ docker run --rm --network none \
     java -javaagent:/tmp/agent.jar -cp "/tmp/classes:/vendor/*" cph.DirectRestoreBoundaryTest
     java -cp "/tmp/classes:/vendor/*" cph.SelfTest
     java -Xverify:all -javaagent:/tmp/agent.jar -cp "/tmp/classes:/vendor/*" cph.ReduceResumeTest --agent
+    java -cp "/tmp/classes:/vendor/*" cph.BlockRolloverTest
+    java -Xverify:all -javaagent:/tmp/agent.jar -cp "/tmp/classes:/vendor/*" cph.BlockRolloverTest --agent
     java -cp "/tmp/classes:/vendor/*" cph.NativeContractsTest
     java --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.security=ALL-UNNAMED -cp "/tmp/classes:/vendor/*" cph.NativeShapesTest
     failed=0

@@ -194,6 +194,26 @@ public final class Patches {
                 cb -> cb.invokestatic(ClassDesc.of("cph.ReduceResume"), "forget", MethodTypeDesc.ofDescriptor("()V")), true));
         }
 
+        // A new source block silo restarts its new-block counter from its own
+        // last saved block and hands out numbers the previous silo has already
+        // handed out. BlockRollover continues the previous counter instead.
+        register(new Patch("block-rollover", "continue new block numbers across a source block silo change",
+            "com/code42/backup/manifest/source/SourceBlockSiloManager", "startAnotherBlockManifest", "(J)V",
+            null, false, CodeTransform.ofStateful(() -> new CodeTransform() {
+                private int returns;
+                @Override public void accept(CodeBuilder cb, java.lang.classfile.CodeElement element) {
+                    if (element instanceof java.lang.classfile.instruction.ReturnInstruction) {
+                        returns++;
+                        cb.aload(0).lload(1).invokestatic(ClassDesc.of("cph.BlockRollover"), "carry", MethodTypeDesc.ofDescriptor(
+                            "(Lcom/code42/backup/manifest/source/SourceBlockSiloManager;J)V"));
+                    }
+                    cb.with(element);
+                }
+                @Override public void atEnd(CodeBuilder cb) {
+                    if (returns != 1) throw new IllegalStateException("native silo start changed");
+                }
+            })));
+
         // All inotify watches of both backup engines (V1 BackupSetsManager and
         // V3 FileActivityService) go through InotifyManager.watch(File). Reporting
         // success without calling inotify_add_watch leaves the kernel without any
