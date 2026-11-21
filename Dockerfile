@@ -58,7 +58,7 @@ RUN set -eux; \
     java -cp '/agent/test-out:/crashplan/lib/*' cph.NativeContractsTest; \
     javac --release 25 -Xlint:all,-path -Werror -cp "/agent/out:/crashplan/lib/*" -d /agent/test-out $(find /agent/test -name '*.java'); \
     mkdir -p /agent/release/cph; \
-    cp /agent/out/cph/Agent*.class /agent/out/cph/Patches*.class /agent/out/cph/RestoreBoundary*.class /agent/out/cph/ReduceResume*.class /agent/release/cph/; \
+    cp /agent/out/cph/Agent*.class /agent/out/cph/Patches*.class /agent/out/cph/RestoreBoundary*.class /agent/out/cph/ReduceResume*.class /agent/out/cph/BlockRollover*.class /agent/release/cph/; \
     cp -a /agent/out/cph/archive /agent/release/cph/; \
     jar --create --file /cph-agent.jar --manifest /agent/MANIFEST.MF -C /agent/release .; \
     java --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.security=ALL-UNNAMED -cp "/agent/test-out:/crashplan/lib/*" cph.NativeShapesTest; \
@@ -77,6 +77,8 @@ RUN set -eux; \
     CPH_PATCHES=none java -Xverify:all -javaagent:/cph-agent.jar -cp "/agent/test-out:/crashplan/lib/*" cph.archive.ArchiveChildrenPagesTest; \
     CPH_PATCHES=none java -Xverify:all -javaagent:/cph-agent.jar -cp "/agent/test-out:/crashplan/lib/*" cph.archive.ArchiveOptionalFieldsTest; \
     CPH_PATCHES=none java -Xverify:all -javaagent:/cph-agent.jar -cp "/agent/test-out:/crashplan/lib/*" cph.ReduceResumeTest --agent; \
+    java -cp "/agent/test-out:/crashplan/lib/*" cph.BlockRolloverTest; \
+    CPH_PATCHES=none java -Xverify:all -javaagent:/cph-agent.jar -cp "/agent/test-out:/crashplan/lib/*" cph.BlockRolloverTest --agent; \
     CPH_CONTROL=1 CPH_DIAG_INTERVAL_SECONDS=1 CPH_PATCHES=no-file-watcher,no-watcher-walk \
     java -javaagent:/cph-agent.jar -cp /agent/test-out cph.ProductionAgentTest
 
