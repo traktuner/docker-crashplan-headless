@@ -141,6 +141,33 @@ public final class Patches {
             cb -> cb.aload(1).aload(2).invokestatic(ClassDesc.of("cph.RestoreBoundary"), "files",
                 MethodTypeDesc.ofDescriptor("(Ljava/io/File;Ljava/io/File;)V")), true));
 
+        // Each version-reduction point the destination sends makes the native
+        // maintenance job read the file manifest from its first entry up to the
+        // point's start entry. ReduceResume continues behind the last entry of
+        // the previous pass instead, after checking it against the manifest index.
+        register(new Patch("reduce-resume", "resume maintenance file passes behind the checked last entry",
+            "com/code42/backup/manifest/source/SourceMaintenanceJob", "processFiles",
+            "(Lcom/code42/backup/manifest/AgentManifest;Lcom/code42/backup/manifest/BackupArchiveProperties;"
+                + "Lcom/code42/backup/manifest/BackupArchiveProperties$ReduceState;)V",
+            null, false, CodeTransform.ofStateful(() -> new CodeTransform() {
+                private int matches;
+                @Override public void accept(CodeBuilder cb, java.lang.classfile.CodeElement element) {
+                    if (element instanceof InvokeInstruction call
+                            && call.owner().asInternalName().equals("com/code42/backup/manifest/file/FileManifest")
+                            && call.name().equalsString("fileManifestEntryIterator")
+                            && call.type().equalsString("(Z)Lcom/code42/io/IOIterator;")) {
+                        matches++;
+                        cb.aload(0).getfield(ClassDesc.ofInternalName("com/code42/backup/manifest/source/SourceMaintenanceJob"),
+                                "startEntryNum", java.lang.constant.ConstantDescs.CD_int)
+                            .invokestatic(ClassDesc.of("cph.ReduceResume"), "iterator", MethodTypeDesc.ofDescriptor(
+                                "(Lcom/code42/backup/manifest/file/FileManifest;ZI)Lcom/code42/io/IOIterator;"));
+                    } else cb.with(element);
+                }
+                @Override public void atEnd(CodeBuilder cb) {
+                    if (matches != 1) throw new IllegalStateException("native maintenance file loop changed");
+                }
+            })));
+
         // All inotify watches of both backup engines (V1 BackupSetsManager and
         // V3 FileActivityService) go through InotifyManager.watch(File). Reporting
         // success without calling inotify_add_watch leaves the kernel without any

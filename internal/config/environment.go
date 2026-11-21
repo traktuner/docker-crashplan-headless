@@ -15,6 +15,7 @@ func NativeEnvironment(input []string, userName, home string, restoreRoots ...st
 		"CPH_TRIM_NATIVE_MS": true, "CPH_UNCOMMIT_DELAY_MS": true, "CPH_MALLOC_ARENA_MAX": true,
 		"CPH_USER_INSTALL": true, "CPH_DIAG_DIR": true, "CPH_DIAGNOSTICS": true,
 		"CPH_JFR": true, "CPH_HEAPDUMP_ON_OOM": true, "CPH_EXTRA_JAVA_OPTS": true, "CPH_RUN_DIR": true,
+		"CPH_REDUCE_RESUME": true,
 	}
 	result := []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME=" + home, "USER=" + userName, "LOGNAME=" + userName}
 	for _, entry := range input {
